@@ -1,6 +1,4 @@
-### ML System Design 
-
-# 1. The 9-Step ML System Design Formula ([Template](./mlsd-template.md)) 
+### The 9-Step ML System Design Formula ([Template](./mlsd-template.md)) 
 
 In order to design a solid ML system for real world applications, it is important to follow a design flow.
 I recommend using the following **9-Step ML System Design Formula**to design SW system solutions for ML-relevant business problems both at work and during interviews:
