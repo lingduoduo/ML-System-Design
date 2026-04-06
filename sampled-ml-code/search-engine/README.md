@@ -1,6 +1,6 @@
 # ML-Based Search Engine System
 
-A comprehensive, production-ready search engine implementation with document indexing, semantic evaluation, query understanding, multi-stage retrieval, and neural ranking. This system combines proposition-based indexing with traditional information retrieval techniques (BM25) and modern deep learning approaches (LTR, cross-encoders) for optimal search quality.
+A modular search-engine reference implementation with document preprocessing, semantic retrieval, semantic evaluation, query understanding, multi-stage retrieval, and neural ranking. The codebase combines classic IR techniques such as BM25 with lightweight semantic search components and includes a config-driven document ingestion path for plain text and JSON inputs.
 
 ## Table of Contents
 
@@ -15,7 +15,9 @@ A comprehensive, production-ready search engine implementation with document ind
 ## System Architecture
 
 ```
-Document Indexing (proposition extraction + hybrid indexing)
+Document Preprocessing (cleanup + segmentation from text/JSON)
+    ↓
+Semantic Indexing (cleaned documents -> semantic search store)
     ↓
 Semantic Evaluation (context relevance, answer relevance, faithfulness)
     ↓
@@ -38,11 +40,12 @@ Final Results
 
 ## Dependencies
 
-```
-torch>=1.9.0
-spacy>=3.0.0
-nltk>=3.6
+```txt
 numpy>=1.19.0
+nltk>=3.6
+PyYAML>=6.0
+spacy>=3.0.0        # optional for semantic slicing and richer NLP
+torch>=1.9.0        # optional for ranking / reranking modules
 ```
 
 Install models:
@@ -51,29 +54,41 @@ python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger'); nltk.download('wordnet'); nltk.download('stopwords')"
 ```
 
+Notes:
+- `document_processor.py`, `search_engine.py`, and `search_recall.py` include lightweight fallbacks for partially provisioned environments.
+- `semantic_slicing.py` requires `spacy`.
+- `learning_to_rank.py`, `intention_classifier.py`, and `reranker.py` require a working `torch` install.
+- `semantic_retriever.py` provides an in-memory semantic search fallback with dataset-aware filtering.
+- `proposition_retrieval.py` now exposes a semantic retrieval pipeline and keeps a compatibility alias for older proposition-style imports.
+
 ---
 
 ## Code Overview
 
-### 1. proposition_retrieval.py - Proposition-Based Retrieval System
-Advanced retrieval system using proposition extraction and hybrid indexing for high-precision retrieval with context completeness.
+### 1. proposition_retrieval.py - Semantic Retrieval Pipeline
+Semantic retrieval pipeline built on top of the local semantic retriever, with preprocessing and compatibility aliases for older proposition-oriented imports.
 
 ```python
 import asyncio
-from proposition_retrieval import PropositionRetrievalPipeline, PerformanceEvaluator
+from proposition_retrieval import SemanticRetrievalPipeline, PerformanceEvaluator
 
 async def main():
-    # Documents to index
     documents = [
-        ("New Jersey hot springs text...", "doc1"),
-        ("Spa resort directions...", "doc2")
+        (
+            {
+                "rec_texts": [
+                    "New Jersey has several excellent hot springs.",
+                    "https://example.com Shunjing Hot Spring is well-known for its resort facilities.",
+                ]
+            },
+            "doc1",
+        ),
+        ("Spa resort directions...", "doc2"),
     ]
 
-    # Build hybrid index
-    pipeline = PropositionRetrievalPipeline()
+    pipeline = SemanticRetrievalPipeline()
     await pipeline.build_index(documents)
 
-    # Retrieve with proposition-first strategy
     results = pipeline.retrieve("best hot springs in New Jersey", top_k=3)
 
     for result in results:
@@ -87,22 +102,56 @@ async def main():
 asyncio.run(main())
 ```
 
-**4-Step Process:**
-1. **Basic Chunking**: Use SentenceSplitter to create text nodes
-2. **Proposition Extraction**: LLM extracts atomic propositions from each node
-3. **Hybrid Index**: Build VectorStoreIndex with both nodes and propositions
-4. **Recursive Retrieval**: Proposition-first retrieval with node fallback
+**3-Step Process:**
+1. **Document Preprocessing**: Normalize whitespace, strip URLs/emails, and segment text via `document_processor.py`
+2. **Semantic Index Build**: Convert cleaned sources into semantic documents
+3. **Semantic Retrieval**: Score documents with the local semantic retriever and return ranked matches
 
 **Benefits:**
-- High-precision proposition-level matching
-- Context completeness through node fallback
-- Superior performance vs recursive methods
-- Asynchronous proposition extraction
+- Supports both plain-text documents and JSON payloads with `rec_texts`
+- Keeps the same pipeline-shaped interface as the old proposition module
+- Works in this repo without external vector infrastructure
+- Graceful degradation through the in-memory semantic fallback
 
 ---
 
-### 2. semantic_slicing.py - Semantic Text Segmentation & Evaluation
-Advanced semantic slicing using SpaCy with comprehensive evaluation metrics for context relevance, answer relevance, and faithfulness.
+### 2. semantic_retriever.py - Semantic Retriever
+Dataset-aware semantic search with an in-memory vector-store fallback.
+
+```python
+from semantic_retriever import SemanticRetriever
+
+documents = [
+    {
+        "dataset_id": "spa-dataset",
+        "document_id": "doc-1",
+        "content": "Shunjing Hot Spring offers outdoor pools and scenic mountain views.",
+    },
+    {
+        "dataset_id": "spa-dataset",
+        "document_id": "doc-2",
+        "content": "Jiuhua Resort has spa services and relaxing hot springs.",
+    },
+]
+
+retriever = SemanticRetriever(dataset_ids=["spa-dataset"], search_kwargs={"k": 2})
+retriever.index_documents(documents)
+
+results = retriever.retrieve("best spa hot spring resort")
+for doc in results:
+    print(doc.metadata["document_id"], doc.metadata["score"])
+```
+
+**Key Features:**
+- Supports `dataset_id`, `document_enabled`, and `segment_enabled` filtering
+- Accepts pluggable vector stores
+- Ships with a local in-memory semantic retrieval fallback
+- Returns lightweight document objects with `score` and `rank`
+
+---
+
+### 3. semantic_slicing.py - Semantic Text Segmentation & Evaluation
+Advanced semantic slicing using spaCy with comprehensive evaluation metrics for context relevance, answer relevance, and faithfulness.
 
 ```python
 from semantic_slicing import SpaCySemanticSlicer, SemanticSlicingPipeline, RecursiveMethodComparator
@@ -134,8 +183,38 @@ print(f"Semantic slicing outperforms recursive: {comparison['improvement']:.3f}"
 
 ---
 
-### 3. search_engine.py - Query Preprocessing
-Legacy base module for query preprocessing and initial analysis.
+### 4. document_processor.py - Document Preprocessing
+Config-driven preprocessing for ingestion-time cleanup and segmentation.
+
+```python
+from document_processor import TextProcessor
+
+processor = TextProcessor()
+
+processor.process("This is a test text. It needs to be segmented.")
+# ['This is a test text.', 'It needs to be segmented.']
+
+processor.process(
+    {
+        "rec_texts": [
+            "Contact us at hello@example.com",
+            "Visit https://example.com for updates.",
+        ]
+    }
+)
+# ['Contact us at Visit for updates.']
+```
+
+**Key Features:**
+- Reads `config.yaml` from the module directory
+- Supports plain text and JSON payloads with `rec_texts`
+- Removes extra spaces, URLs, and emails
+- Returns non-empty text segments ready for indexing
+
+---
+
+### 5. search_engine.py - Query Understanding Core
+Primary query-processing module used across the retrieval stack.
 
 ```python
 import re
@@ -364,259 +443,26 @@ if __name__ == "__main__":
 
 ---
 
-### 4. query_understanding.py - Enhanced Query Processing
-Advanced query understanding module with chunk analysis and intent detection.
+### 6. query_understanding.py - Compatibility Re-export
+Thin compatibility layer that re-exports `SearchQueryProcessor` from `search_engine.py`.
 
 ```python
-import re
-import unicodedata
-from collections import Counter
-from typing import List, Tuple, Dict
+from query_understanding import SearchQueryProcessor
 
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from nltk.util import ngrams
-
-try:
-    import spacy
-except ImportError:
-    spacy = None
-
-SPACY_AVAILABLE = spacy is not None
-
-class SearchQueryProcessor:
-    EMOJI_PATTERN = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F1E0-\U0001F1FF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "]+",
-        flags=re.UNICODE,
-    )
-    PUNCTUATION_PATTERN = re.compile(r"[^\w\s]+")
-    WHITESPACE_PATTERN = re.compile(r"\s+")
-    DATE_PATTERN = re.compile(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}:\d{2}")
-    NUMBER_PATTERN = re.compile(r"\d+\.?\d*")
-
-    def __init__(self, language: str = "en"):
-        self.language = language
-        self.stop_words = set(stopwords.words("english"))
-        self.lemmatizer = WordNetLemmatizer()
-        self.intent_keywords = {
-            "purchase": ["buy", "purchase", "order", "shop", "checkout"],
-            "navigate": ["map", "directions", "navigate", "route", "go to"],
-            "qa": ["what", "who", "when", "how", "where", "why"],
-            "recommendation": ["recommend", "suggest", "advice", "best"],
-        }
-        self.synonym_map = {
-            "tv": ["television", "smart tv"],
-            "notebook": ["laptop", "ultrabook"],
-            "spa": ["hot spring", "resort"],
-            "phone": ["smartphone", "mobile"],
-        }
-        self.click_log = Counter()
-        self.idf = Counter()
-        self.spacy_nlp = self._load_spacy_model() if SPACY_AVAILABLE else None
-
-    def _load_spacy_model(self):
-        try:
-            return spacy.load("en_core_web_sm")
-        except OSError:
-            return None
-
-    def normalize_whitespace(self, text: str) -> str:
-        return self.WHITESPACE_PATTERN.sub(" ", text).strip()
-
-    def remove_invalid_characters(self, text: str) -> str:
-        return "".join(ch for ch in text if not unicodedata.category(ch).startswith(("C", "S")))
-
-    def remove_emojis(self, text: str) -> str:
-        return self.EMOJI_PATTERN.sub("", text)
-
-    def lowercase(self, text: str) -> str:
-        return text.lower()
-
-    def remove_punctuation(self, text: str) -> str:
-        return self.PUNCTUATION_PATTERN.sub("", text)
-
-    def preprocess(self, text: str, max_chars: int = 64) -> str:
-        text = text or ""
-        text = self.remove_emojis(text)
-        text = self.remove_invalid_characters(text)
-        text = self.normalize_whitespace(text)
-        text = self.lowercase(text)
-        text = self.remove_punctuation(text)
-        return self.truncate_text(text, max_chars)
-
-    def truncate_text(self, text: str, max_chars: int) -> str:
-        return text if max_chars is None else text[:max_chars]
-
-    def tokenize(self, text: str) -> List[str]:
-        if self.spacy_nlp:
-            doc = self.spacy_nlp(text)
-            return [token.text for token in doc if not token.is_space]
-        return nltk.word_tokenize(text)
-
-    def pos_tag(self, tokens: List[str]) -> List[Tuple[str, str]]:
-        if self.spacy_nlp:
-            doc = self.spacy_nlp(" ".join(tokens))
-            return [(token.text, token.pos_) for token in doc if not token.is_space]
-        return nltk.pos_tag(tokens)
-
-    def named_entities(self, text: str) -> List[Tuple[str, str]]:
-        if self.spacy_nlp:
-            doc = self.spacy_nlp(text)
-            return [(ent.text, ent.label_) for ent in doc.ents]
-        entities = [(item, "DATE") for item in self.DATE_PATTERN.findall(text)]
-        entities.extend((item, "NUMBER") for item in self.NUMBER_PATTERN.findall(text))
-        return entities
-
-    def remove_stopwords(self, tokens: List[str]) -> List[str]:
-        return [token for token in tokens if token.lower() not in self.stop_words]
-
-    def lemmatize(self, tokens: List[str]) -> List[str]:
-        if self.spacy_nlp:
-            doc = self.spacy_nlp(" ".join(tokens))
-            return [token.lemma_ for token in doc if not token.is_space]
-        return [self.lemmatizer.lemmatize(token) for token in tokens]
-
-    def generate_ngrams(self, tokens: List[str], n: int = 2) -> List[Tuple[str, ...]]:
-        return list(ngrams(tokens, n))
-
-    def calculate_term_weights(self, tokens: List[str]) -> Dict[str, float]:
-        return {token: float(self.click_log.get(token, 1)) * self.idf.get(token, 1.0) for token in tokens}
-
-    def update_click_log(self, clicked_terms: List[str]) -> None:
-        self.click_log.update(clicked_terms)
-
-    def set_idf(self, idf_mapping: Dict[str, float]) -> None:
-        self.idf.update(idf_mapping)
-
-    def vocabulary(self) -> set:
-        synonym_terms = {term for values in self.synonym_map.values() for term in values}
-        return set(self.synonym_map.keys()) | synonym_terms | self.stop_words
-
-    def expand_synonyms(self, tokens: List[str]) -> List[str]:
-        expanded = list(tokens)
-        for token in tokens:
-            expanded.extend(self.synonym_map.get(token, []))
-        return list(dict.fromkeys(expanded))
-
-    def analyze_chunks(self, tokens: List[str], pos_tags: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        location_words = {"beijing", "shanghai", "new york", "london"}
-        chunks = []
-        for token, pos in pos_tags:
-            lower_token = token.lower()
-            if lower_token in location_words or pos == "PROPN":
-                chunks.append((token, "LOCATION"))
-            elif pos == "ADJ":
-                chunks.append((token, "MODIFIER"))
-            elif pos in {"NOUN", "PROPN"}:
-                chunks.append((token, "CATEGORY"))
-            else:
-                chunks.append((token, "OTHER"))
-        return chunks
-
-    def detect_category_intent(self, chunk_tags: List[Tuple[str, str]]) -> str:
-        categories = [tag for _, tag in chunk_tags if tag == "CATEGORY"]
-        modifiers = [tag for _, tag in chunk_tags if tag == "MODIFIER"]
-        if categories and modifiers:
-            return "category_search"
-        if categories:
-            return "exact_search"
-        return "keyword_search"
-
-    def detect_intents(self, text: str, tokens: List[str]) -> List[Tuple[str, float]]:
-        lower_text = text.lower()
-        scores = [
-            (intent, sum(keyword in lower_text for keyword in keywords) / len(keywords))
-            for intent, keywords in self.intent_keywords.items()
-            if any(keyword in lower_text for keyword in keywords)
-        ]
-        return sorted(scores, key=lambda item: item[1], reverse=True)
-
-    def recognize_entities(self, text: str) -> List[Tuple[str, str]]:
-        entities = self.named_entities(text)
-        if not entities and "beijing" in text.lower():
-            entities.append(("Beijing", "GPE"))
-        return entities
-
-    def simple_error_correction(self, tokens: List[str]) -> List[str]:
-        vocabulary = self.vocabulary()
-        corrected = []
-        for token in tokens:
-            lower_token = token.lower()
-            if lower_token in vocabulary or len(token) <= 1:
-                corrected.append(token)
-                continue
-            candidates = [word for word in vocabulary if abs(len(word) - len(lower_token)) <= 2]
-            if not candidates:
-                corrected.append(token)
-                continue
-            best = min(candidates, key=lambda cand: nltk.edit_distance(lower_token, cand.lower()))
-            corrected.append(best if nltk.edit_distance(lower_token, best.lower()) <= 2 else token)
-        return corrected
-
-    def generate_drop_candidates(self, tokens: List[str], term_weights: Dict[str, float]) -> List[str]:
-        if len(tokens) <= 1:
-            return [" ".join(tokens)]
-
-        sorted_tokens = sorted(tokens, key=lambda token: term_weights.get(token, 0.0))
-        candidates = [" ".join(tokens)]
-        for k in range(1, min(3, len(sorted_tokens))):
-            dropped = [token for token in tokens if token not in set(sorted_tokens[:k])]
-            if dropped:
-                candidates.append(" ".join(dropped))
-        return list(dict.fromkeys(candidates))
-
-    def rewrite_query(self, tokens: List[str], term_weights: Dict[str, float]) -> List[str]:
-        candidates = [" ".join(tokens)]
-        candidates.extend(self.generate_drop_candidates(tokens, term_weights))
-        candidates.append(" ".join(self.expand_synonyms(tokens)))
-        return [query for query in dict.fromkeys(candidates) if query]
-
-    def process_query(self, text: str, max_chars: int = 64) -> Dict[str, object]:
-        raw = self.preprocess(text, max_chars=max_chars)
-        tokens = self.tokenize(raw)
-        corrected_tokens = self.simple_error_correction(tokens)
-        filtered_tokens = self.remove_stopwords(corrected_tokens)
-        lemmas = self.lemmatize(filtered_tokens)
-        pos_tags = self.pos_tag(filtered_tokens)
-        term_weights = self.calculate_term_weights(lemmas)
-        intents = self.detect_intents(raw, tokens)
-        entities = self.recognize_entities(raw)
-        rewrites = self.rewrite_query(lemmas, term_weights)
-        bigrams = self.generate_ngrams(lemmas, 2)
-
-        return {
-            "raw": raw,
-            "tokens": tokens,
-            "corrected_tokens": corrected_tokens,
-            "filtered_tokens": filtered_tokens,
-            "lemmas": lemmas,
-            "pos_tags": pos_tags,
-            "term_weights": term_weights,
-            "intents": intents,
-            "entities": entities,
-            "rewrites": rewrites,
-            "bigrams": bigrams,
-        }
-
-
-if __name__ == "__main__":
-    processor = SearchQueryProcessor()
-    result = processor.process_query("Beijing famous hot spring 😊 I want to see scenery", max_chars=64)
-    for key, value in result.items():
-        print(f"{key}: {value}")
+processor = SearchQueryProcessor()
+result = processor.process_query("Beijing famous hot spring")
+print(result["lemmas"])
+print(result["category_intent"])
 ```
+
+**Why it exists:**
+- Preserves older imports
+- Keeps `search_recall.py` and external examples stable
+- Centralizes actual query logic in one implementation
 
 ---
 
-### 5. search_recall.py - Multi-Stage Retrieval
+### 7. search_recall.py - Multi-Stage Retrieval
 Online search recall engine with multi-stage fallback strategy.
 
 ```python
@@ -739,7 +585,7 @@ if __name__ == "__main__":
 
 ---
 
-### 6. intention_classifier.py - User Intent Classification
+### 8. intention_classifier.py - User Intent Classification
 PyTorch-based neural classifier for 4-class intent prediction.
 
 ```python
@@ -882,7 +728,7 @@ if __name__ == "__main__":
 
 ---
 
-### 7. bm25_retriever.py - Sparse Retrieval
+### 9. bm25_retriever.py - Sparse Retrieval
 BM25 algorithm implementation for efficient sparse retrieval.
 
 ```python
@@ -1023,7 +869,7 @@ if __name__ == "__main__":
 
 ---
 
-### 8. learning_to_rank.py - Neural Ranking
+### 10. learning_to_rank.py - Neural Ranking
 Point-wise and pairwise Learning-to-Rank models for document ranking.
 
 ```python
@@ -1301,7 +1147,7 @@ if __name__ == "__main__":
 
 ---
 
-### 9. reranker.py - Cross-Encoder & Deep Semantic
+### 11. reranker.py - Cross-Encoder & Deep Semantic
 Reranking models for refining retrieved results.
 
 ```python
@@ -1635,61 +1481,21 @@ if __name__ == "__main__":
         print(f"  {doc['name']}: {doc.get('hybrid_score', 0):.4f}")
 ```
 
----
-
-## Module Details
-Advanced retrieval system using proposition extraction and hybrid indexing for high-precision retrieval with context completeness.
-
-```python
-import asyncio
-from proposition_retrieval import PropositionRetrievalPipeline, PerformanceEvaluator
-
-async def main():
-    # Documents to index
-    documents = [
-        ("New Jersey hot springs text...", "doc1"),
-        ("Spa resort directions...", "doc2")
-    ]
-
-    # Build hybrid index
-    pipeline = PropositionRetrievalPipeline()
-    await pipeline.build_index(documents)
-
-    # Retrieve with proposition-first strategy
-    results = pipeline.retrieve("best hot springs in New Jersey", top_k=3)
-
-    for result in results:
-        print(f"[{result['type']}] {result['text'][:100]}... (score: {result['score']:.3f})")
-
-    # Evaluate performance
-    evaluator = PerformanceEvaluator()
-    metrics = evaluator.evaluate_retrieval(queries, ground_truth, pipeline)
-    print(f"Precision: {metrics['avg_precision']:.3f}, Recall: {metrics['avg_recall']:.3f}")
-
-asyncio.run(main())
-```
-
-**Benefits:**
-- High-precision proposition-level matching
-- Context completeness through node fallback
-- Superior performance vs recursive methods
-- Asynchronous proposition extraction
-
----
-
 ## Module Details
 
 | Module | Purpose | Key Classes | Lines | Dependencies |
 |--------|---------|-------------|-------|--------------|
-| proposition_retrieval.py | Proposition-based retrieval system | PropositionExtractor, HybridIndexBuilder, RecursivePropositionRetriever | 499 | llama-index, torch |
-| semantic_slicing.py | Semantic text segmentation & evaluation | SpaCySemanticSlicer, ContextRelevanceScorer, FaithfulnessEvaluator | 532 | spacy, torch, numpy |
-| search_engine.py | Query preprocessing | SearchQueryProcessor | 222 | nltk, spacy, re |
-| query_understanding.py | Query analysis & enhancement | SearchQueryProcessor | 244 | nltk, spacy, re |
-| search_recall.py | Multi-stage retrieval | SearchRecallEngine | 112 | query_understanding |
+| document_processor.py | Config-driven document cleanup and segmentation | TextProcessor | 113 | re, json, PyYAML |
+| proposition_retrieval.py | Semantic retrieval pipeline with backward-compatible alias | SemanticIndexBuilder, SemanticRetrievalPipeline, PerformanceEvaluator | 177 | numpy, document_processor, semantic_retriever |
+| semantic_retriever.py | Dataset-aware semantic retrieval with in-memory fallback | RetrievedDocument, InMemorySemanticVectorStore, SemanticRetriever | 194 | numpy, document_processor |
+| semantic_slicing.py | Semantic text segmentation and evaluation | SpaCySemanticSlicer, ContextRelevanceScorer, FaithfulnessEvaluator | 466 | spacy, numpy |
+| search_engine.py | Shared query understanding core | SearchQueryProcessor | 306 | nltk, spacy, re |
+| query_understanding.py | Backward-compatible re-export for query processor | SearchQueryProcessor | 4 | search_engine |
+| search_recall.py | Multi-stage retrieval over partner and backup pools | SearchRecallEngine | 156 | query_understanding |
 | intention_classifier.py | Intent classification | IntentionClassifier, IntentionClassificationPipeline | 135 | torch |
-| bm25_retriever.py | Sparse retrieval | BM25, BM25Retriever | 133 | math, typing |
+| bm25_retriever.py | Sparse retrieval with preprocessing-aware indexing | BM25, BM25Retriever | 187 | math, document_processor |
 | learning_to_rank.py | Neural ranking | PointwiseLTRRanker, PairwiseLTRRanker | 270 | torch, numpy |
-| reranker.py | Result reranking | CrossEncoderReranker, DenseSemanticReranker, HybridReranker | 328 | torch, numpy |
+| reranker.py | Neural reranking with graceful dependency checks | CrossEncoderReranker, DenseSemanticReranker, HybridReranker | 349 | torch, numpy |
 
 ---
 
@@ -1708,7 +1514,7 @@ from learning_to_rank import PointwiseLTRRanker
 from reranker import HybridReranker
 
 async def main():
-    # 0. Index documents with proposition extraction
+    # 0. Index documents for semantic retrieval
     documents = [
         ("New Jersey has famous hot springs with scenic views...", "doc1"),
         ("Relaxing spa resorts offer premium services...", "doc2")
@@ -1807,4 +1613,3 @@ final_results = reranker.rerank(query_result["lemmas"], ranked_docs, top_k=3)
 10. **Real-time indexing** updates
 
 ---
-

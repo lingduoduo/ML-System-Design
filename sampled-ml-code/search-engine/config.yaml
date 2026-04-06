@@ -1,0 +1,9 @@
+dify:
+  process_rules:
+    pre_processing:
+      - id: remove_extra_spaces
+        enabled: true
+      - id: remove_urls_emails
+        enabled: true
+    segmentation:
+      separator: "(?<=[.!?])\\s+|\\n+"
