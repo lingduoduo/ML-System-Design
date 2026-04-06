@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections import Counter
-from typing import List, Tuple, Dict
+from typing import Dict, List, Optional, Set, Tuple
 
 import nltk
 from nltk.corpus import stopwords
@@ -13,7 +13,9 @@ try:
 except ImportError:
     spacy = None
 
+
 SPACY_AVAILABLE = spacy is not None
+
 
 class SearchQueryProcessor:
     EMOJI_PATTERN = re.compile(
@@ -31,10 +33,18 @@ class SearchQueryProcessor:
     WHITESPACE_PATTERN = re.compile(r"\s+")
     DATE_PATTERN = re.compile(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}:\d{2}")
     NUMBER_PATTERN = re.compile(r"\d+\.?\d*")
+    LOCATION_WORDS = {
+        "beijing",
+        "shanghai",
+        "new york",
+        "new jersey",
+        "london",
+        "california",
+    }
 
     def __init__(self, language: str = "en"):
         self.language = language
-        self.stop_words = set(stopwords.words("english"))
+        self.stop_words = self._load_stop_words(language)
         self.lemmatizer = WordNetLemmatizer()
         self.intent_keywords = {
             "purchase": ["buy", "purchase", "order", "shop", "checkout"],
@@ -46,11 +56,34 @@ class SearchQueryProcessor:
             "tv": ["television", "smart tv"],
             "notebook": ["laptop", "ultrabook"],
             "spa": ["hot spring", "resort"],
+            "hot spring": ["spa", "resort"],
             "phone": ["smartphone", "mobile"],
         }
         self.click_log = Counter()
         self.idf = Counter()
         self.spacy_nlp = self._load_spacy_model() if SPACY_AVAILABLE else None
+
+    def _load_stop_words(self, language: str) -> Set[str]:
+        if language != "en":
+            return set()
+        try:
+            return set(stopwords.words("english"))
+        except LookupError:
+            return {
+                "a",
+                "an",
+                "and",
+                "are",
+                "for",
+                "i",
+                "in",
+                "is",
+                "of",
+                "the",
+                "to",
+                "want",
+                "with",
+            }
 
     def _load_spacy_model(self):
         try:
@@ -86,16 +119,26 @@ class SearchQueryProcessor:
         return self.truncate_text(text, max_chars)
 
     def tokenize(self, text: str) -> List[str]:
+        if not text:
+            return []
         if self.spacy_nlp:
             doc = self.spacy_nlp(text)
             return [token.text for token in doc if not token.is_space]
-        return nltk.word_tokenize(text)
+        try:
+            return nltk.word_tokenize(text)
+        except LookupError:
+            return text.split()
 
     def pos_tag(self, tokens: List[str]) -> List[Tuple[str, str]]:
+        if not tokens:
+            return []
         if self.spacy_nlp:
             doc = self.spacy_nlp(" ".join(tokens))
             return [(token.text, token.pos_) for token in doc if not token.is_space]
-        return nltk.pos_tag(tokens)
+        try:
+            return nltk.pos_tag(tokens)
+        except LookupError:
+            return [(token, "NOUN") for token in tokens]
 
     def named_entities(self, text: str) -> List[Tuple[str, str]]:
         if self.spacy_nlp:
@@ -109,26 +152,36 @@ class SearchQueryProcessor:
         return [token for token in tokens if token.lower() not in self.stop_words]
 
     def lemmatize(self, tokens: List[str]) -> List[str]:
+        if not tokens:
+            return []
         if self.spacy_nlp:
             doc = self.spacy_nlp(" ".join(tokens))
-            return [token.lemma_ for token in doc if not token.is_space]
-        return [self.lemmatizer.lemmatize(token) for token in tokens]
+            return [token.lemma_.lower() for token in doc if not token.is_space]
+        lemmas = []
+        for token in tokens:
+            try:
+                lemmas.append(self.lemmatizer.lemmatize(token.lower()))
+            except LookupError:
+                lemmas.append(token.lower())
+        return lemmas
 
     def generate_ngrams(self, tokens: List[str], n: int = 2) -> List[Tuple[str, ...]]:
+        if len(tokens) < n:
+            return []
         return list(ngrams(tokens, n))
 
     def calculate_term_weights(self, tokens: List[str]) -> Dict[str, float]:
         return {token: float(self.click_log.get(token, 1)) * self.idf.get(token, 1.0) for token in tokens}
 
     def update_click_log(self, clicked_terms: List[str]) -> None:
-        self.click_log.update(clicked_terms)
+        self.click_log.update(term.lower() for term in clicked_terms)
 
     def set_idf(self, idf_mapping: Dict[str, float]) -> None:
-        self.idf.update(idf_mapping)
+        self.idf.update({term.lower(): weight for term, weight in idf_mapping.items()})
 
-    def vocabulary(self) -> set:
+    def vocabulary(self) -> Set[str]:
         synonym_terms = {term for values in self.synonym_map.values() for term in values}
-        return set(self.synonym_map.keys()) | synonym_terms | self.stop_words
+        return set(self.synonym_map.keys()) | synonym_terms | self.stop_words | self.LOCATION_WORDS
 
     def expand_synonyms(self, tokens: List[str]) -> List[str]:
         expanded = list(tokens)
@@ -136,7 +189,30 @@ class SearchQueryProcessor:
             expanded.extend(self.synonym_map.get(token, []))
         return list(dict.fromkeys(expanded))
 
-    def detect_intents(self, text: str) -> List[Tuple[str, float]]:
+    def analyze_chunks(self, tokens: List[str], pos_tags: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        chunk_tags = []
+        for token, pos in pos_tags:
+            lower_token = token.lower()
+            if lower_token in self.LOCATION_WORDS or pos in {"GPE", "LOC"}:
+                chunk_tags.append((token, "LOCATION"))
+            elif pos in {"ADJ", "ADV"}:
+                chunk_tags.append((token, "MODIFIER"))
+            elif pos in {"NOUN", "PROPN"}:
+                chunk_tags.append((token, "CATEGORY"))
+            else:
+                chunk_tags.append((token, "OTHER"))
+        return chunk_tags
+
+    def detect_category_intent(self, chunk_tags: List[Tuple[str, str]]) -> str:
+        category_count = sum(1 for _, tag in chunk_tags if tag == "CATEGORY")
+        modifier_count = sum(1 for _, tag in chunk_tags if tag == "MODIFIER")
+        if category_count and modifier_count:
+            return "category_search"
+        if category_count:
+            return "exact_search"
+        return "keyword_search"
+
+    def detect_intents(self, text: str, tokens: Optional[List[str]] = None) -> List[Tuple[str, float]]:
         lower_text = text.lower()
         scores = [
             (intent, sum(keyword in lower_text for keyword in keywords) / len(keywords))
@@ -147,8 +223,10 @@ class SearchQueryProcessor:
 
     def recognize_entities(self, text: str) -> List[Tuple[str, str]]:
         entities = self.named_entities(text)
-        if not entities and "beijing" in text.lower():
-            entities.append(("Beijing", "GPE"))
+        if not entities:
+            for location in self.LOCATION_WORDS:
+                if location in text.lower():
+                    entities.append((location.title(), "GPE"))
         return entities
 
     def simple_error_correction(self, tokens: List[str]) -> List[str]:
@@ -157,32 +235,35 @@ class SearchQueryProcessor:
         for token in tokens:
             lower_token = token.lower()
             if lower_token in vocabulary or len(token) <= 1:
-                corrected.append(token)
+                corrected.append(lower_token)
                 continue
             candidates = [word for word in vocabulary if abs(len(word) - len(lower_token)) <= 2]
             if not candidates:
-                corrected.append(token)
+                corrected.append(lower_token)
                 continue
             best = min(candidates, key=lambda cand: nltk.edit_distance(lower_token, cand.lower()))
-            corrected.append(best if nltk.edit_distance(lower_token, best.lower()) <= 2 else token)
+            corrected.append(best if nltk.edit_distance(lower_token, best.lower()) <= 2 else lower_token)
         return corrected
 
     def generate_drop_candidates(self, tokens: List[str], term_weights: Dict[str, float]) -> List[str]:
         if len(tokens) <= 1:
-            return [" ".join(tokens)]
+            return [" ".join(tokens)] if tokens else []
 
         sorted_tokens = sorted(tokens, key=lambda token: term_weights.get(token, 0.0))
         candidates = [" ".join(tokens)]
         for k in range(1, min(3, len(sorted_tokens))):
-            dropped = [token for token in tokens if token not in set(sorted_tokens[:k])]
+            dropped_terms = set(sorted_tokens[:k])
+            dropped = [token for token in tokens if token not in dropped_terms]
             if dropped:
                 candidates.append(" ".join(dropped))
         return list(dict.fromkeys(candidates))
 
     def rewrite_query(self, tokens: List[str], term_weights: Dict[str, float]) -> List[str]:
-        candidates = [" ".join(tokens)]
+        candidates = [" ".join(tokens)] if tokens else []
         candidates.extend(self.generate_drop_candidates(tokens, term_weights))
-        candidates.append(" ".join(self.expand_synonyms(tokens)))
+        synonym_expansion = self.expand_synonyms(tokens)
+        if synonym_expansion:
+            candidates.append(" ".join(synonym_expansion))
         return [query for query in dict.fromkeys(candidates) if query]
 
     def process_query(self, text: str, max_chars: int = 64) -> Dict[str, object]:
@@ -193,7 +274,8 @@ class SearchQueryProcessor:
         lemmas = self.lemmatize(filtered_tokens)
         pos_tags = self.pos_tag(filtered_tokens)
         term_weights = self.calculate_term_weights(lemmas)
-        intents = self.detect_intents(raw)
+        chunk_tags = self.analyze_chunks(filtered_tokens, pos_tags)
+        intents = self.detect_intents(raw, tokens)
         entities = self.recognize_entities(raw)
         rewrites = self.rewrite_query(lemmas, term_weights)
         bigrams = self.generate_ngrams(lemmas, 2)
@@ -205,6 +287,8 @@ class SearchQueryProcessor:
             "filtered_tokens": filtered_tokens,
             "lemmas": lemmas,
             "pos_tags": pos_tags,
+            "chunk_tags": chunk_tags,
+            "category_intent": self.detect_category_intent(chunk_tags),
             "term_weights": term_weights,
             "intents": intents,
             "entities": entities,

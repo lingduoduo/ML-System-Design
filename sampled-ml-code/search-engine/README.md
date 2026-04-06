@@ -1,6 +1,6 @@
 # ML-Based Search Engine System
 
-A comprehensive, production-ready search engine implementation with query understanding, multi-stage retrieval, and neural ranking. This system combines traditional information retrieval techniques (BM25) with modern deep learning approaches (LTR, cross-encoders) for optimal search quality.
+A comprehensive, production-ready search engine implementation with document indexing, semantic evaluation, query understanding, multi-stage retrieval, and neural ranking. This system combines proposition-based indexing with traditional information retrieval techniques (BM25) and modern deep learning approaches (LTR, cross-encoders) for optimal search quality.
 
 ## Table of Contents
 
@@ -15,6 +15,10 @@ A comprehensive, production-ready search engine implementation with query unders
 ## System Architecture
 
 ```
+Document Indexing (proposition extraction + hybrid indexing)
+    ↓
+Semantic Evaluation (context relevance, answer relevance, faithfulness)
+    ↓
 Query Input
     ↓
 Query Understanding (preprocessing, tokenization, NER, intent detection)
@@ -51,7 +55,86 @@ python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptr
 
 ## Code Overview
 
-### 1. search_engine.py - Query Preprocessing
+### 1. proposition_retrieval.py - Proposition-Based Retrieval System
+Advanced retrieval system using proposition extraction and hybrid indexing for high-precision retrieval with context completeness.
+
+```python
+import asyncio
+from proposition_retrieval import PropositionRetrievalPipeline, PerformanceEvaluator
+
+async def main():
+    # Documents to index
+    documents = [
+        ("New Jersey hot springs text...", "doc1"),
+        ("Spa resort directions...", "doc2")
+    ]
+
+    # Build hybrid index
+    pipeline = PropositionRetrievalPipeline()
+    await pipeline.build_index(documents)
+
+    # Retrieve with proposition-first strategy
+    results = pipeline.retrieve("best hot springs in New Jersey", top_k=3)
+
+    for result in results:
+        print(f"[{result['type']}] {result['text'][:100]}... (score: {result['score']:.3f})")
+
+    # Evaluate performance
+    evaluator = PerformanceEvaluator()
+    metrics = evaluator.evaluate_retrieval(queries, ground_truth, pipeline)
+    print(f"Precision: {metrics['avg_precision']:.3f}, Recall: {metrics['avg_recall']:.3f}")
+
+asyncio.run(main())
+```
+
+**4-Step Process:**
+1. **Basic Chunking**: Use SentenceSplitter to create text nodes
+2. **Proposition Extraction**: LLM extracts atomic propositions from each node
+3. **Hybrid Index**: Build VectorStoreIndex with both nodes and propositions
+4. **Recursive Retrieval**: Proposition-first retrieval with node fallback
+
+**Benefits:**
+- High-precision proposition-level matching
+- Context completeness through node fallback
+- Superior performance vs recursive methods
+- Asynchronous proposition extraction
+
+---
+
+### 2. semantic_slicing.py - Semantic Text Segmentation & Evaluation
+Advanced semantic slicing using SpaCy with comprehensive evaluation metrics for context relevance, answer relevance, and faithfulness.
+
+```python
+from semantic_slicing import SpaCySemanticSlicer, SemanticSlicingPipeline, RecursiveMethodComparator
+
+# Create semantic slicer
+slicer = SpaCySemanticSlicer()
+segments = slicer.slice_text(context_text, max_segments=5)
+
+# Full pipeline with evaluation
+pipeline = SemanticSlicingPipeline()
+result = pipeline.process_query("What are the best hot springs?", context_text)
+
+print(f"Difficulty: {result['difficulty_analysis']['difficulty_level']}")
+print(f"Segments: {len(result['segments'])}")
+print(f"Avg faithfulness: {np.mean([r['faithfulness_score'] for r in result['faithfulness_results']])}")
+
+# Compare with recursive methods
+comparator = RecursiveMethodComparator()
+comparison = comparator.compare_methods(queries, contexts)
+print(f"Semantic slicing outperforms recursive: {comparison['improvement']:.3f}")
+```
+
+**Key Features:**
+- Context relevance scoring with TF-IDF weighting
+- Answer relevance using semantic similarity
+- Faithfulness evaluation with hallucination detection
+- Query difficulty analysis (lexical, syntactic, semantic)
+- Performance comparison against recursive methods
+
+---
+
+### 3. search_engine.py - Query Preprocessing
 Legacy base module for query preprocessing and initial analysis.
 
 ```python
@@ -281,7 +364,7 @@ if __name__ == "__main__":
 
 ---
 
-### 2. query_understanding.py - Enhanced Query Processing
+### 4. query_understanding.py - Enhanced Query Processing
 Advanced query understanding module with chunk analysis and intent detection.
 
 ```python
@@ -533,7 +616,7 @@ if __name__ == "__main__":
 
 ---
 
-### 3. search_recall.py - Multi-Stage Retrieval
+### 5. search_recall.py - Multi-Stage Retrieval
 Online search recall engine with multi-stage fallback strategy.
 
 ```python
@@ -656,7 +739,7 @@ if __name__ == "__main__":
 
 ---
 
-### 4. intention_classifier.py - User Intent Classification
+### 6. intention_classifier.py - User Intent Classification
 PyTorch-based neural classifier for 4-class intent prediction.
 
 ```python
@@ -799,7 +882,7 @@ if __name__ == "__main__":
 
 ---
 
-### 5. bm25_retriever.py - Sparse Retrieval
+### 7. bm25_retriever.py - Sparse Retrieval
 BM25 algorithm implementation for efficient sparse retrieval.
 
 ```python
@@ -940,7 +1023,7 @@ if __name__ == "__main__":
 
 ---
 
-### 6. learning_to_rank.py - Neural Ranking
+### 8. learning_to_rank.py - Neural Ranking
 Point-wise and pairwise Learning-to-Rank models for document ranking.
 
 ```python
@@ -1218,7 +1301,7 @@ if __name__ == "__main__":
 
 ---
 
-### 7. reranker.py - Cross-Encoder & Deep Semantic
+### 9. reranker.py - Cross-Encoder & Deep Semantic
 Reranking models for refining retrieved results.
 
 ```python
@@ -1554,40 +1637,7 @@ if __name__ == "__main__":
 
 ---
 
-### 8. semantic_slicing.py - Semantic Text Segmentation & Evaluation
-Advanced semantic slicing using SpaCy with comprehensive evaluation metrics for context relevance, answer relevance, and faithfulness.
-
-```python
-from semantic_slicing import SpaCySemanticSlicer, SemanticSlicingPipeline, RecursiveMethodComparator
-
-# Create semantic slicer
-slicer = SpaCySemanticSlicer()
-segments = slicer.slice_text(context_text, max_segments=5)
-
-# Full pipeline with evaluation
-pipeline = SemanticSlicingPipeline()
-result = pipeline.process_query("What are the best hot springs?", context_text)
-
-print(f"Difficulty: {result['difficulty_analysis']['difficulty_level']}")
-print(f"Segments: {len(result['segments'])}")
-print(f"Avg faithfulness: {np.mean([r['faithfulness_score'] for r in result['faithfulness_results']])}")
-
-# Compare with recursive methods
-comparator = RecursiveMethodComparator()
-comparison = comparator.compare_methods(queries, contexts)
-print(f"Semantic slicing outperforms recursive: {comparison['improvement']:.3f}")
-```
-
-**Key Features:**
-- Context relevance scoring with TF-IDF weighting
-- Answer relevance using semantic similarity
-- Faithfulness evaluation with hallucination detection
-- Query difficulty analysis (lexical, syntactic, semantic)
-- Performance comparison against recursive methods
-
----
-
-### 9. proposition_retrieval.py - Proposition-Based Retrieval System
+## Module Details
 Advanced retrieval system using proposition extraction and hybrid indexing for high-precision retrieval with context completeness.
 
 ```python
@@ -1619,12 +1669,6 @@ async def main():
 asyncio.run(main())
 ```
 
-**4-Step Process:**
-1. **Basic Chunking**: Use SentenceSplitter to create text nodes
-2. **Proposition Extraction**: LLM extracts atomic propositions from each node
-3. **Hybrid Index**: Build VectorStoreIndex with both nodes and propositions
-4. **Recursive Retrieval**: Proposition-first retrieval with node fallback
-
 **Benefits:**
 - High-precision proposition-level matching
 - Context completeness through node fallback
@@ -1637,6 +1681,8 @@ asyncio.run(main())
 
 | Module | Purpose | Key Classes | Lines | Dependencies |
 |--------|---------|-------------|-------|--------------|
+| proposition_retrieval.py | Proposition-based retrieval system | PropositionExtractor, HybridIndexBuilder, RecursivePropositionRetriever | 499 | llama-index, torch |
+| semantic_slicing.py | Semantic text segmentation & evaluation | SpaCySemanticSlicer, ContextRelevanceScorer, FaithfulnessEvaluator | 532 | spacy, torch, numpy |
 | search_engine.py | Query preprocessing | SearchQueryProcessor | 222 | nltk, spacy, re |
 | query_understanding.py | Query analysis & enhancement | SearchQueryProcessor | 244 | nltk, spacy, re |
 | search_recall.py | Multi-stage retrieval | SearchRecallEngine | 112 | query_understanding |
@@ -1644,12 +1690,61 @@ asyncio.run(main())
 | bm25_retriever.py | Sparse retrieval | BM25, BM25Retriever | 133 | math, typing |
 | learning_to_rank.py | Neural ranking | PointwiseLTRRanker, PairwiseLTRRanker | 270 | torch, numpy |
 | reranker.py | Result reranking | CrossEncoderReranker, DenseSemanticReranker, HybridReranker | 328 | torch, numpy |
-| semantic_slicing.py | Semantic text segmentation & evaluation | SpaCySemanticSlicer, ContextRelevanceScorer, FaithfulnessEvaluator | 532 | spacy, torch, numpy |
-| proposition_retrieval.py | Proposition-based retrieval system | PropositionExtractor, HybridIndexBuilder, RecursivePropositionRetriever | 499 | llama-index, torch |
 
 ---
 
 ## Usage Examples
+
+### Complete Search System with Indexing & Evaluation
+
+```python
+import asyncio
+from proposition_retrieval import PropositionRetrievalPipeline
+from semantic_slicing import SemanticSlicingPipeline
+from query_understanding import SearchQueryProcessor
+from search_recall import SearchRecallEngine
+from bm25_retriever import BM25Retriever
+from learning_to_rank import PointwiseLTRRanker
+from reranker import HybridReranker
+
+async def main():
+    # 0. Index documents with proposition extraction
+    documents = [
+        ("New Jersey has famous hot springs with scenic views...", "doc1"),
+        ("Relaxing spa resorts offer premium services...", "doc2")
+    ]
+    
+    index_pipeline = PropositionRetrievalPipeline()
+    await index_pipeline.build_index(documents)
+    
+    # 1. Process query with semantic evaluation
+    processor = SearchQueryProcessor()
+    slicer = SemanticSlicingPipeline()
+    
+    query = "best hot springs in New Jersey"
+    query_result = processor.process_query(query)
+    eval_result = slicer.process_query(query, "New Jersey hot springs context...")
+    
+    print(f"Query difficulty: {eval_result['difficulty_analysis']['difficulty_level']}")
+    
+    # Continue with retrieval pipeline...
+    recall_engine = SearchRecallEngine()
+    recall_result = recall_engine.recall(query)
+    
+    retriever = BM25Retriever()
+    retrieved_docs = retriever.retrieve(query_result["lemmas"], top_k=10)
+    
+    ranker = PointwiseLTRRanker()
+    ranked_docs = ranker.rank(query_result["lemmas"], retrieved_docs, top_k=5)
+    
+    reranker = HybridReranker()
+    final_results = reranker.rerank(query_result["lemmas"], ranked_docs, top_k=3)
+    
+    return final_results
+
+# Run the complete pipeline
+results = asyncio.run(main())
+```
 
 ### End-to-End Search Pipeline
 
@@ -1685,28 +1780,31 @@ final_results = reranker.rerank(query_result["lemmas"], ranked_docs, top_k=3)
 
 ## Performance Characteristics
 
+- **Document Indexing**: O(d*p) where d = documents, p = propositions per document
+- **Semantic Evaluation**: O(s) where s = segments for context/answer relevance
 - **Query Processing**: O(n) where n = query length
 - **BM25 Retrieval**: O(q*d) where q = query terms, d = documents
 - **LTR Ranking**: O(d*f) where d = documents, f = features
 - **Cross-Encoder Reranking**: O(d) one-pass encoding
 - **Dense Semantic**: O(d) with separate encoders
+- **Proposition Retrieval**: O(k*log d) where k = top propositions, d = indexed documents
 
 ---
 
 ## Future Enhancements
 
-1. **BERT-based embeddings** for improved semantic understanding
-2. **ListWise LTR** for group-level ranking optimization
-3. **Multi-field indexing** with field-specific analysis
-4. **Model serialization** for deployment
-5. **Evaluation metrics** (NDCG, MRR, MAP)
-6. **A/B testing framework** for ranking models
+1. **Advanced indexing** with proposition-level embeddings
+2. **Multi-modal evaluation** (context, answer, faithfulness)
+3. **BERT-based embeddings** for improved semantic understanding
+4. **ListWise LTR** for group-level ranking optimization
+5. **Multi-field indexing** with field-specific analysis
+6. **Model serialization** for deployment
+7. **Comprehensive evaluation metrics** (NDCG, MRR, MAP)
+8. **A/B testing framework** for ranking models
+9. **Query expansion** with proposition-based retrieval
+10. **Real-time indexing** updates
+9. **Query expansion** with proposition-based retrieval
+10. **Real-time indexing** updates
 
 ---
 
-## References
-
-- BM25: Okapi BM25 full text search algorithm
-- Learning-to-Rank: Li, H., et al. Learning to Rank for Information Retrieval
-- Cross-Encoders: Thakur, N., et al. BEIR: A Heterogeneous Benchmark for Zero-shot Evaluation
-- Dense Retrieval: Karpukhin, V., et al. Dense Passage Retrieval for Open-domain Question Answering

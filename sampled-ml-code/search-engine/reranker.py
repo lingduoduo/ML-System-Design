@@ -1,13 +1,29 @@
-import torch
-import torch.nn as nn
-from typing import List, Dict, Tuple
+from __future__ import annotations
+
+from typing import Dict, List, Tuple
 import numpy as np
 
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+    TORCH_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - environment-specific import failure
+    torch = None
+    nn = None
+    TORCH_AVAILABLE = False
+    TORCH_IMPORT_ERROR = exc
 
-class CrossEncoderModel(nn.Module):
+
+BaseModule = nn.Module if TORCH_AVAILABLE else object
+
+
+class CrossEncoderModel(BaseModule):
     """Cross-encoder model that jointly encodes query and document."""
 
-    def __init__(self, input_dim: int = 64, hidden_dim: int = 256):
+    def __init__(self, input_dim: int = 5, hidden_dim: int = 256):
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is required for CrossEncoderModel") from TORCH_IMPORT_ERROR
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.relu = nn.ReLU()
@@ -30,10 +46,12 @@ class CrossEncoderModel(nn.Module):
         return score
 
 
-class DenseSemanticModel(nn.Module):
+class DenseSemanticModel(BaseModule):
     """Deep semantic model with separate query and document encoders."""
 
     def __init__(self, input_dim: int = 32, embedding_dim: int = 128, hidden_dim: int = 256):
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is required for DenseSemanticModel") from TORCH_IMPORT_ERROR
         super().__init__()
         self.embedding_dim = embedding_dim
 
@@ -101,7 +119,7 @@ class RerankerFeatureExtractor:
 class CrossEncoderReranker:
     """Cross-encoder based reranker."""
 
-    def __init__(self, input_dim: int = 64, hidden_dim: int = 256):
+    def __init__(self, input_dim: int = 5, hidden_dim: int = 256):
         self.model = CrossEncoderModel(input_dim, hidden_dim)
         self.feature_extractor = RerankerFeatureExtractor()
         self.is_trained = False
@@ -125,8 +143,8 @@ class CrossEncoderReranker:
                     features = self.feature_extractor.extract_features(query, doc)
                     normalized_label = min(label / 5.0, 1.0)
 
-                    features_tensor = torch.tensor([features]).to(self.model.device)
-                    label_tensor = torch.tensor([[normalized_label]]).to(self.model.device)
+                    features_tensor = torch.tensor(features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
+                    label_tensor = torch.tensor([[normalized_label]], dtype=torch.float32, device=self.model.device)
 
                     optimizer.zero_grad()
                     score = self.model(features_tensor)
@@ -152,7 +170,7 @@ class CrossEncoderReranker:
         with torch.no_grad():
             for doc in docs:
                 features = self.feature_extractor.extract_features(query, doc)
-                features_tensor = torch.tensor([features]).to(self.model.device)
+                features_tensor = torch.tensor(features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
                 score = self.model(features_tensor).item()
                 scores.append(score)
 
@@ -198,9 +216,9 @@ class DenseSemanticReranker:
                         doc1_features = self.feature_extractor.extract_features(query, docs[i])
                         doc2_features = self.feature_extractor.extract_features(query, docs[j])
 
-                        query_tensor = torch.tensor([query_features]).to(self.model.device)
-                        doc1_tensor = torch.tensor([doc1_features]).to(self.model.device)
-                        doc2_tensor = torch.tensor([doc2_features]).to(self.model.device)
+                        query_tensor = torch.tensor(query_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
+                        doc1_tensor = torch.tensor(doc1_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
+                        doc2_tensor = torch.tensor(doc2_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
 
                         optimizer.zero_grad()
 
@@ -231,12 +249,12 @@ class DenseSemanticReranker:
         scores = []
 
         with torch.no_grad():
-            query_features = self.feature_extractor.extract_features(query, {"name": "", "description": ""})
-            query_tensor = torch.tensor([query_features]).to(self.model.device)
+            query_features = self.feature_extractor.extract_features(query, {"name": "", "description": "", "category": ""})
+            query_tensor = torch.tensor(query_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
 
             for doc in docs:
                 doc_features = self.feature_extractor.extract_features(query, doc)
-                doc_tensor = torch.tensor([doc_features]).to(self.model.device)
+                doc_tensor = torch.tensor(doc_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
                 score = self.model(query_tensor, doc_tensor).item()
                 scores.append(score)
 
@@ -294,6 +312,9 @@ class HybridReranker:
 
 
 if __name__ == "__main__":
+    if not TORCH_AVAILABLE:
+        raise SystemExit(f"PyTorch is unavailable in this environment: {TORCH_IMPORT_ERROR}")
+
     pois = [
         {"id": 1, "name": "Shunjing Hot Spring", "category": "Hot Spring", "description": "well-known resort"},
         {"id": 2, "name": "Jiuhua Mountain Resort", "category": "Hot Spring", "description": "scenic spa resort"},
