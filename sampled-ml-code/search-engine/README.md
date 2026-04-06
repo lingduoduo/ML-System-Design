@@ -1554,17 +1554,98 @@ if __name__ == "__main__":
 
 ---
 
+### 8. semantic_slicing.py - Semantic Text Segmentation & Evaluation
+Advanced semantic slicing using SpaCy with comprehensive evaluation metrics for context relevance, answer relevance, and faithfulness.
+
+```python
+from semantic_slicing import SpaCySemanticSlicer, SemanticSlicingPipeline, RecursiveMethodComparator
+
+# Create semantic slicer
+slicer = SpaCySemanticSlicer()
+segments = slicer.slice_text(context_text, max_segments=5)
+
+# Full pipeline with evaluation
+pipeline = SemanticSlicingPipeline()
+result = pipeline.process_query("What are the best hot springs?", context_text)
+
+print(f"Difficulty: {result['difficulty_analysis']['difficulty_level']}")
+print(f"Segments: {len(result['segments'])}")
+print(f"Avg faithfulness: {np.mean([r['faithfulness_score'] for r in result['faithfulness_results']])}")
+
+# Compare with recursive methods
+comparator = RecursiveMethodComparator()
+comparison = comparator.compare_methods(queries, contexts)
+print(f"Semantic slicing outperforms recursive: {comparison['improvement']:.3f}")
+```
+
+**Key Features:**
+- Context relevance scoring with TF-IDF weighting
+- Answer relevance using semantic similarity
+- Faithfulness evaluation with hallucination detection
+- Query difficulty analysis (lexical, syntactic, semantic)
+- Performance comparison against recursive methods
+
+---
+
+### 9. proposition_retrieval.py - Proposition-Based Retrieval System
+Advanced retrieval system using proposition extraction and hybrid indexing for high-precision retrieval with context completeness.
+
+```python
+import asyncio
+from proposition_retrieval import PropositionRetrievalPipeline, PerformanceEvaluator
+
+async def main():
+    # Documents to index
+    documents = [
+        ("New Jersey hot springs text...", "doc1"),
+        ("Spa resort directions...", "doc2")
+    ]
+
+    # Build hybrid index
+    pipeline = PropositionRetrievalPipeline()
+    await pipeline.build_index(documents)
+
+    # Retrieve with proposition-first strategy
+    results = pipeline.retrieve("best hot springs in New Jersey", top_k=3)
+
+    for result in results:
+        print(f"[{result['type']}] {result['text'][:100]}... (score: {result['score']:.3f})")
+
+    # Evaluate performance
+    evaluator = PerformanceEvaluator()
+    metrics = evaluator.evaluate_retrieval(queries, ground_truth, pipeline)
+    print(f"Precision: {metrics['avg_precision']:.3f}, Recall: {metrics['avg_recall']:.3f}")
+
+asyncio.run(main())
+```
+
+**4-Step Process:**
+1. **Basic Chunking**: Use SentenceSplitter to create text nodes
+2. **Proposition Extraction**: LLM extracts atomic propositions from each node
+3. **Hybrid Index**: Build VectorStoreIndex with both nodes and propositions
+4. **Recursive Retrieval**: Proposition-first retrieval with node fallback
+
+**Benefits:**
+- High-precision proposition-level matching
+- Context completeness through node fallback
+- Superior performance vs recursive methods
+- Asynchronous proposition extraction
+
+---
+
 ## Module Details
 
-| Module | Purpose | Key Classes | Dependencies |
-|--------|---------|-------------|--------------|
-| search_engine.py | Query preprocessing | SearchQueryProcessor | nltk, spacy, re |
-| query_understanding.py | Query analysis & enhancement | SearchQueryProcessor | nltk, spacy, re |
-| search_recall.py | Multi-stage retrieval | SearchRecallEngine | query_understanding |
-| intention_classifier.py | Intent classification | IntentionClassifier, IntentionClassificationPipeline | torch |
-| bm25_retriever.py | Sparse retrieval | BM25, BM25Retriever | math, typing |
-| learning_to_rank.py | Neural ranking | PointwiseLTRRanker, PairwiseLTRRanker | torch, numpy |
-| reranker.py | Result reranking | CrossEncoderReranker, DenseSemanticReranker, HybridReranker | torch, numpy |
+| Module | Purpose | Key Classes | Lines | Dependencies |
+|--------|---------|-------------|-------|--------------|
+| search_engine.py | Query preprocessing | SearchQueryProcessor | 222 | nltk, spacy, re |
+| query_understanding.py | Query analysis & enhancement | SearchQueryProcessor | 244 | nltk, spacy, re |
+| search_recall.py | Multi-stage retrieval | SearchRecallEngine | 112 | query_understanding |
+| intention_classifier.py | Intent classification | IntentionClassifier, IntentionClassificationPipeline | 135 | torch |
+| bm25_retriever.py | Sparse retrieval | BM25, BM25Retriever | 133 | math, typing |
+| learning_to_rank.py | Neural ranking | PointwiseLTRRanker, PairwiseLTRRanker | 270 | torch, numpy |
+| reranker.py | Result reranking | CrossEncoderReranker, DenseSemanticReranker, HybridReranker | 328 | torch, numpy |
+| semantic_slicing.py | Semantic text segmentation & evaluation | SpaCySemanticSlicer, ContextRelevanceScorer, FaithfulnessEvaluator | 532 | spacy, torch, numpy |
+| proposition_retrieval.py | Proposition-based retrieval system | PropositionExtractor, HybridIndexBuilder, RecursivePropositionRetriever | 499 | llama-index, torch |
 
 ---
 
