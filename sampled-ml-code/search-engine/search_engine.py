@@ -73,6 +73,9 @@ class SearchQueryProcessor:
     def remove_punctuation(self, text: str) -> str:
         return self.PUNCTUATION_PATTERN.sub("", text)
 
+    def truncate_text(self, text: str, max_chars: int) -> str:
+        return text if max_chars is None else text[:max_chars]
+
     def preprocess(self, text: str, max_chars: int = 64) -> str:
         text = text or ""
         text = self.remove_emojis(text)
@@ -81,9 +84,6 @@ class SearchQueryProcessor:
         text = self.lowercase(text)
         text = self.remove_punctuation(text)
         return self.truncate_text(text, max_chars)
-
-    def truncate_text(self, text: str, max_chars: int) -> str:
-        return text if max_chars is None else text[:max_chars]
 
     def tokenize(self, text: str) -> List[str]:
         if self.spacy_nlp:
@@ -136,31 +136,7 @@ class SearchQueryProcessor:
             expanded.extend(self.synonym_map.get(token, []))
         return list(dict.fromkeys(expanded))
 
-    def analyze_chunks(self, tokens: List[str], pos_tags: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        location_words = {"beijing", "shanghai", "new york", "london"}
-        chunks = []
-        for token, pos in pos_tags:
-            lower_token = token.lower()
-            if lower_token in location_words or pos == "PROPN":
-                chunks.append((token, "LOCATION"))
-            elif pos == "ADJ":
-                chunks.append((token, "MODIFIER"))
-            elif pos in {"NOUN", "PROPN"}:
-                chunks.append((token, "CATEGORY"))
-            else:
-                chunks.append((token, "OTHER"))
-        return chunks
-
-    def detect_category_intent(self, chunk_tags: List[Tuple[str, str]]) -> str:
-        categories = [tag for _, tag in chunk_tags if tag == "CATEGORY"]
-        modifiers = [tag for _, tag in chunk_tags if tag == "MODIFIER"]
-        if categories and modifiers:
-            return "category_search"
-        if categories:
-            return "exact_search"
-        return "keyword_search"
-
-    def detect_intents(self, text: str, tokens: List[str]) -> List[Tuple[str, float]]:
+    def detect_intents(self, text: str) -> List[Tuple[str, float]]:
         lower_text = text.lower()
         scores = [
             (intent, sum(keyword in lower_text for keyword in keywords) / len(keywords))
@@ -217,7 +193,7 @@ class SearchQueryProcessor:
         lemmas = self.lemmatize(filtered_tokens)
         pos_tags = self.pos_tag(filtered_tokens)
         term_weights = self.calculate_term_weights(lemmas)
-        intents = self.detect_intents(raw, tokens)
+        intents = self.detect_intents(raw)
         entities = self.recognize_entities(raw)
         rewrites = self.rewrite_query(lemmas, term_weights)
         bigrams = self.generate_ngrams(lemmas, 2)
@@ -239,6 +215,8 @@ class SearchQueryProcessor:
 
 if __name__ == "__main__":
     processor = SearchQueryProcessor()
+    processor.set_idf({"beijing": 2.5, "hot": 1.5, "spring": 1.8, "famous": 1.2})
+    processor.update_click_log(["beijing", "hot", "spring"])
     result = processor.process_query("Beijing famous hot spring 😊 I want to see scenery", max_chars=64)
     for key, value in result.items():
         print(f"{key}: {value}")
