@@ -60,7 +60,7 @@ class RAGSystem:
     rewrite_chain: Any | None = None
     rag_chain: Any | None = None
     multi_step_agent: Any | None = None
-    query_engine: Any | None = None
+    query_engine: RAGQueryEngine | None = None
 
 
 @dataclass
@@ -72,7 +72,7 @@ class RichRAGRuntime:
     rewrite_chain: Any
     rag_chain: Any
     multi_step_agent: Any
-    query_engine: Any
+    query_engine: RAGQueryEngine
     langchain_feature_store: LangChainFeatureStore
 
 

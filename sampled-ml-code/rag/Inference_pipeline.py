@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import json
 import logging
 import re
@@ -36,6 +37,7 @@ class LLMTwin:
         raise TypeError("LLMTwin model must implement either `generate` or `invoke`.")
 
 
+@lru_cache(maxsize=1)
 def _import_agent_dependencies() -> Dict[str, Any]:
     try:
         from langchain_core.messages import AIMessage, HumanMessage
@@ -185,38 +187,6 @@ def build_rag_chain(retriever: Any, llm: Any) -> Any:
     )
 
 
-def search_child_friendly_attractions(rag_chain: Any, query: str) -> str:
-    logging.info("[Tool] Searching child-friendly attractions: %s", query)
-    try:
-        tool_query = (
-            "Find child-friendly attractions relevant to the user's request. "
-            "Return a short list with brief reasons.\n\n"
-            f"User request: {query}"
-        )
-        result = rag_chain.invoke(tool_query)
-        result = result.strip() if isinstance(result, str) else str(result).strip()
-        return result or "No relevant child-friendly attractions found."
-    except Exception as exc:
-        logging.error("[Tool] Error in child-friendly attractions search: %s", exc)
-        return "An error occurred while searching for child-friendly attractions."
-
-
-def search_nearby_restaurants(rag_chain: Any, query: str) -> str:
-    logging.info("[Tool] Searching nearby restaurants: %s", query)
-    try:
-        tool_query = (
-            "Find recommended restaurants near the mentioned attractions/areas. "
-            "Return a short list with brief reasons.\n\n"
-            f"User request: {query}"
-        )
-        result = rag_chain.invoke(tool_query)
-        result = result.strip() if isinstance(result, str) else str(result).strip()
-        return result or "No nearby recommended restaurants found."
-    except Exception as exc:
-        logging.error("[Tool] Error in nearby restaurants search: %s", exc)
-        return "An error occurred while searching for nearby restaurants."
-
-
 class AgentState(TypedDict, total=False):
     messages: List[Any]
     scratchpad: str
@@ -324,13 +294,13 @@ class QueryUnderstandingEngine:
                     "- Keep the rewrite concise and easy for a tool call to use.\n"
                     "- Preserve the user's intent.\n"
                     "- Do not add extra detail that the user did not provide.\n"
-                    "- Use the hypothetical travel note only to disambiguate, not to add specifics.\n"
+                    "- Use the hypothetical note only to disambiguate, not to add specifics.\n"
                     "- Prefer a short search-ready query that is easy for MCP-style tool calls to consume.\n"
                     "- Return only the rewritten query.",
                 ),
                 (
                     "human",
-                    "Original query:\n{query}\n\nHypothetical travel note:\n{hyde_context}",
+                    "Original query:\n{query}\n\nHypothetical note:\n{hyde_context}",
                 ),
             ]
         )
@@ -373,7 +343,7 @@ def create_planner_prompt() -> Any:
                 "1) RewriteAmbiguousQuery(query: str)\n"
                 "   - Use first when the user query is ambiguous, underspecified, or too conversational for tool calls.\n"
                 "   - Rewrite it into a short, search-ready query for later tool use.\n"
-                "   - This tool uses a HyDE-style hypothetical travel note internally before producing the final rewrite.\n"
+                "   - This tool uses a HyDE-style hypothetical note internally before producing the final rewrite.\n"
                 "   - Do not add new details.\n"
                 "2) DecomposeQueryIntoSubquestions(query: str)\n"
                 "   - Use when the request contains multiple needs or should be handled as several smaller retrieval questions.\n"

@@ -21,6 +21,26 @@ def _count_chunks(system: RAGSystem) -> int:
     return 0
 
 
+def _build_response_payload(
+    *,
+    req: "QueryRequest",
+    query: str,
+    response: str,
+    retrieved_context: list[str],
+    multi_step: bool,
+) -> dict:
+    return {
+        "query": req.query,
+        "rewritten_query": query if query != req.query else None,
+        "retrieval_mode": req.retrieval_mode,
+        "expand_query": req.expand_query,
+        "rewrite_question": req.rewrite_question,
+        "multi_step": multi_step,
+        "retrieved_context": retrieved_context,
+        "response": response,
+    }
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 2
@@ -53,29 +73,23 @@ def generate(req: QueryRequest) -> dict:
     system = get_system()
     if req.multi_step:
         if system.multi_step_agent is None:
-            return {
-                "query": req.query,
-                "rewritten_query": None,
-                "retrieval_mode": req.retrieval_mode,
-                "expand_query": req.expand_query,
-                "rewrite_question": req.rewrite_question,
-                "multi_step": True,
-                "retrieved_context": [],
-                "response": "Multi-step querying is unavailable in the current runtime.",
-            }
+            return _build_response_payload(
+                req=req,
+                query=req.query,
+                response="Multi-step querying is unavailable in the current runtime.",
+                retrieved_context=[],
+                multi_step=True,
+            )
 
         response = run_multi_step_search(system.multi_step_agent, req.query)
         system.evaluator.record_run(req.query, [], response)
-        return {
-            "query": req.query,
-            "rewritten_query": None,
-            "retrieval_mode": req.retrieval_mode,
-            "expand_query": req.expand_query,
-            "rewrite_question": req.rewrite_question,
-            "multi_step": True,
-            "retrieved_context": [],
-            "response": response,
-        }
+        return _build_response_payload(
+            req=req,
+            query=req.query,
+            response=response,
+            retrieved_context=[],
+            multi_step=True,
+        )
 
     retrieval_query = req.query
     if req.rewrite_question and system.rewrite_chain is not None:
@@ -98,16 +112,13 @@ def generate(req: QueryRequest) -> dict:
             retrieved.append((score, metadata))
         response = result.answer
         system.evaluator.record_run(retrieval_query, retrieved, response)
-        return {
-            "query": req.query,
-            "rewritten_query": retrieval_query if retrieval_query != req.query else None,
-            "retrieval_mode": req.retrieval_mode,
-            "expand_query": req.expand_query,
-            "rewrite_question": req.rewrite_question,
-            "multi_step": False,
-            "retrieved_context": [doc.page_content for doc in result.documents],
-            "response": response,
-        }
+        return _build_response_payload(
+            req=req,
+            query=retrieval_query,
+            response=response,
+            retrieved_context=[doc.page_content for doc in result.documents],
+            multi_step=False,
+        )
 
     retrieved = system.retrieval_client.retrieve(
         retrieval_query,
@@ -118,13 +129,10 @@ def generate(req: QueryRequest) -> dict:
     response = system.llm_twin.answer(retrieval_query, retrieved)
     system.evaluator.record_run(retrieval_query, retrieved, response)
 
-    return {
-        "query": req.query,
-        "rewritten_query": retrieval_query if retrieval_query != req.query else None,
-        "retrieval_mode": req.retrieval_mode,
-        "expand_query": req.expand_query,
-        "rewrite_question": req.rewrite_question,
-        "multi_step": False,
-        "retrieved_context": [metadata["text"] for _, metadata in retrieved],
-        "response": response,
-    }
+    return _build_response_payload(
+        req=req,
+        query=retrieval_query,
+        response=response,
+        retrieved_context=[metadata["text"] for _, metadata in retrieved],
+        multi_step=False,
+    )

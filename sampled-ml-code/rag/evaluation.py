@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import json
 import logging
 import re
@@ -50,11 +51,41 @@ class GroundTruthDataset(EvaluationDataset):
     """Backward-compatible alias for older imports."""
 
 
+@lru_cache(maxsize=1)
+def _import_retrieval_comparison_dependencies() -> Dict[str, Any]:
+    try:
+        import numpy as np
+        import pandas as pd
+        import torch
+        from datasets import Dataset
+        from sentence_transformers import SentenceTransformer
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError as exc:
+        raise ImportError(
+            "Retrieval comparison utilities require `numpy`, `pandas`, `torch`, "
+            "`datasets`, `sentence-transformers`, and `scikit-learn`."
+        ) from exc
+
+    return {
+        "Dataset": Dataset,
+        "SentenceTransformer": SentenceTransformer,
+        "TfidfVectorizer": TfidfVectorizer,
+        "cosine_similarity": cosine_similarity,
+        "np": np,
+        "pd": pd,
+        "torch": torch,
+    }
+
+
+@lru_cache(maxsize=1)
 def _import_ragas_dependencies() -> Dict[str, Any]:
     try:
         import pandas as pd
         from datasets import Dataset
         from ragas import evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
         from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
     except ImportError as exc:
         raise ImportError(
@@ -63,11 +94,45 @@ def _import_ragas_dependencies() -> Dict[str, Any]:
 
     return {
         "Dataset": Dataset,
+        "LangchainEmbeddingsWrapper": LangchainEmbeddingsWrapper,
+        "LangchainLLMWrapper": LangchainLLMWrapper,
         "answer_relevancy": answer_relevancy,
         "context_precision": context_precision,
         "context_recall": context_recall,
         "evaluate": evaluate,
         "faithfulness": faithfulness,
+        "pd": pd,
+    }
+
+
+@lru_cache(maxsize=1)
+def _import_chunking_experiment_dependencies() -> Dict[str, Any]:
+    try:
+        import pandas as pd
+        from datasets import Dataset
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+    except ImportError as exc:
+        raise ImportError(
+            "Chunking experiments require `langchain-openai`, `langchain-text-splitters`, "
+            "`datasets`, and `pandas`."
+        ) from exc
+
+    ragas_deps = _import_ragas_dependencies()
+    return {
+        "ChatOpenAI": ChatOpenAI,
+        "Dataset": Dataset,
+        "LangchainEmbeddingsWrapper": ragas_deps["LangchainEmbeddingsWrapper"],
+        "LangchainLLMWrapper": ragas_deps["LangchainLLMWrapper"],
+        "OpenAIEmbeddings": OpenAIEmbeddings,
+        "RecursiveCharacterTextSplitter": RecursiveCharacterTextSplitter,
+        "evaluate": ragas_deps["evaluate"],
+        "metrics": [
+            ragas_deps["answer_relevancy"],
+            ragas_deps["context_precision"],
+            ragas_deps["context_recall"],
+            ragas_deps["faithfulness"],
+        ],
         "pd": pd,
     }
 
@@ -109,6 +174,7 @@ def get_retrieved_doc_ids(docs: List[Any], id_key: str = "source") -> List[str]:
     return doc_ids
 
 
+@lru_cache(maxsize=1)
 def _import_judge_dependencies() -> Dict[str, Any]:
     try:
         from langchain_core.output_parsers import StrOutputParser
@@ -252,6 +318,188 @@ class RagasEvaluator:
             ground_truths=[row["ground_truth"] for row in rows],
         )
         return self.evaluate_dataset(dataset)
+
+
+@dataclass
+class RetrievalComparisonSample:
+    question: str
+    ground_truth: str
+
+
+@dataclass
+class RetrievalMethodComparison:
+    corpus: List[str]
+    embedding_model_name: str = "all-MiniLM-L6-v2"
+    inverted_top_k: int = 2
+    vector_top_k: int = 2
+    ragas_evaluator: RagasEvaluator = field(default_factory=RagasEvaluator)
+    _vectorizer: Any = field(init=False, repr=False)
+    _tfidf_matrix: Any = field(init=False, repr=False)
+    _embedding_model: Any = field(init=False, repr=False)
+    _corpus_embeddings: Any = field(init=False, repr=False)
+    _deps: Dict[str, Any] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._deps = _import_retrieval_comparison_dependencies()
+        self._vectorizer = self._deps["TfidfVectorizer"]()
+        self._tfidf_matrix = self._vectorizer.fit_transform(self.corpus)
+        self._embedding_model = self._deps["SentenceTransformer"](self.embedding_model_name)
+        self._corpus_embeddings = self._embedding_model.encode(self.corpus, convert_to_tensor=True)
+
+    def retrieve_with_inverted_index(self, query: str, top_k: int | None = None) -> List[str]:
+        limit = top_k if top_k is not None else self.inverted_top_k
+        query_vector = self._vectorizer.transform([query])
+        scores = self._deps["cosine_similarity"](query_vector, self._tfidf_matrix).flatten()
+        top_indices = self._deps["np"].argsort(scores)[-limit:][::-1]
+        return [self.corpus[index] for index in top_indices if scores[index] > 0]
+
+    def retrieve_with_vector_index(self, query: str, top_k: int | None = None) -> List[str]:
+        limit = top_k if top_k is not None else self.vector_top_k
+        query_embedding = self._embedding_model.encode(query, convert_to_tensor=True)
+        scores = self._deps["torch"].nn.functional.cosine_similarity(
+            query_embedding.unsqueeze(0),
+            self._corpus_embeddings,
+            dim=1,
+        ).cpu().numpy()
+        top_indices = self._deps["np"].argsort(scores)[-limit:][::-1]
+        return [self.corpus[index] for index in top_indices if scores[index] > 0]
+
+    def build_comparison_rows(
+        self,
+        samples: List[RetrievalComparisonSample],
+        answer_builder: Callable[[str, List[str], str], str] | None = None,
+    ) -> List[Dict[str, Any]]:
+        def default_answer_builder(question: str, contexts: List[str], method: str) -> str:
+            if not contexts:
+                return "No relevant information found."
+            prefix = "keyword retrieval" if method == "Inverted Index" else "semantic retrieval"
+            return f"Based on {prefix}, the answer is supported by: {contexts[0]}"
+
+        build_answer = answer_builder or default_answer_builder
+        rows: List[Dict[str, Any]] = []
+
+        for sample in samples:
+            inverted_contexts = self.retrieve_with_inverted_index(sample.question)
+            vector_contexts = self.retrieve_with_vector_index(sample.question)
+
+            rows.append(
+                {
+                    "question": sample.question,
+                    "contexts": inverted_contexts,
+                    "answer": build_answer(sample.question, inverted_contexts, "Inverted Index"),
+                    "ground_truth": sample.ground_truth,
+                    "retrieval_method": "Inverted Index",
+                }
+            )
+            rows.append(
+                {
+                    "question": sample.question,
+                    "contexts": vector_contexts,
+                    "answer": build_answer(sample.question, vector_contexts, "Vector Index"),
+                    "ground_truth": sample.ground_truth,
+                    "retrieval_method": "Vector Index",
+                }
+            )
+
+        return rows
+
+    def build_dataset(self, rows: List[Dict[str, Any]]) -> Any:
+        dataframe = self._deps["pd"].DataFrame(rows)
+        return self._deps["Dataset"].from_pandas(dataframe)
+
+    def evaluate_samples(
+        self,
+        samples: List[RetrievalComparisonSample],
+        answer_builder: Callable[[str, List[str], str], str] | None = None,
+    ) -> Dict[str, Any]:
+        rows = self.build_comparison_rows(samples, answer_builder=answer_builder)
+        ragas_metrics = self.ragas_evaluator.evaluate_examples(rows)
+        metric_frame = self._deps["pd"].DataFrame(ragas_metrics)
+        original_frame = self._deps["pd"].DataFrame(rows)
+        combined = self._deps["pd"].concat(
+            [original_frame.reset_index(drop=True), metric_frame.reset_index(drop=True)],
+            axis=1,
+        )
+        return {
+            "rows": rows,
+            "metrics": ragas_metrics,
+            "combined": combined.to_dict(orient="list"),
+        }
+
+
+@dataclass
+class ChunkingEvaluationSample:
+    question: str
+    answer: str
+    ground_truth: str
+
+
+@dataclass
+class ChunkingStrategyEvaluator:
+    llm_model_name: str = "gpt-4o-mini"
+    embedding_model_name: str = "text-embedding-3-small"
+    temperature: float = 0.0
+    separators: List[str] = field(default_factory=lambda: ["\n", ".", " "])
+
+    def _build_wrapped_judges(self) -> Tuple[Any, Any]:
+        deps = _import_chunking_experiment_dependencies()
+        llm = deps["LangchainLLMWrapper"](
+            deps["ChatOpenAI"](model=self.llm_model_name, temperature=self.temperature)
+        )
+        embeddings = deps["LangchainEmbeddingsWrapper"](
+            deps["OpenAIEmbeddings"](model=self.embedding_model_name)
+        )
+        return llm, embeddings
+
+    def chunk_text(self, text: str, chunk_size: int = 200, chunk_overlap: int = 50) -> List[str]:
+        deps = _import_chunking_experiment_dependencies()
+        splitter = deps["RecursiveCharacterTextSplitter"](
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=self.separators,
+        )
+        return splitter.split_text(text)
+
+    def evaluate_chunking_strategy(
+        self,
+        text: str,
+        samples: List[ChunkingEvaluationSample],
+        chunk_sizes: List[int],
+        chunk_overlaps: List[int],
+    ) -> Dict[str, Any]:
+        deps = _import_chunking_experiment_dependencies()
+        evaluator_llm, evaluator_embeddings = self._build_wrapped_judges()
+        result_frames = []
+
+        for size in chunk_sizes:
+            for overlap in chunk_overlaps:
+                chunks = self.chunk_text(text, chunk_size=size, chunk_overlap=overlap)
+                dataframe = deps["pd"].DataFrame(
+                    {
+                        "question": [sample.question for sample in samples],
+                        "answer": [sample.answer for sample in samples],
+                        "contexts": [chunks for _ in samples],
+                        "ground_truth": [sample.ground_truth for sample in samples],
+                    }
+                )
+                dataset = deps["Dataset"].from_pandas(dataframe)
+                result = deps["evaluate"](
+                    dataset,
+                    metrics=deps["metrics"],
+                    llm=evaluator_llm,
+                    embeddings=evaluator_embeddings,
+                )
+
+                result_frame = result.to_pandas()
+                result_frame["chunk_size"] = size
+                result_frame["chunk_overlap"] = overlap
+                result_frames.append(result_frame)
+
+        if not result_frames:
+            return {"results": []}
+
+        combined = deps["pd"].concat(result_frames, ignore_index=True)
+        return {"results": combined.to_dict(orient="list")}
 
 
 @dataclass

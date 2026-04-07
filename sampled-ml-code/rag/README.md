@@ -260,6 +260,8 @@ This lets the project move beyond the toy embedder and toy vector store while al
 - answer judging
 - end-to-end dataset evaluation with `RAGEvaluator`
 - optional RAGAS-based evaluation with `RagasEvaluator`
+- retrieval-method comparison utilities with `RetrievalMethodComparison`
+- chunking-strategy experiments with `ChunkingStrategyEvaluator`
 
 ## Current Limitations
 
@@ -274,6 +276,8 @@ Some parts are intentionally simplified:
 - ambiguity handling is prompt-based, so rewrite quality depends on the local LLM
 - the LangChain path still uses lightweight adapters around retrievers and models
 - RAGAS evaluation is optional and requires extra packages plus an appropriate evaluation LLM setup
+- retrieval-method comparison utilities also require `sentence-transformers`, `scikit-learn`, `numpy`, and `torch`
+- chunking-strategy experiments also require `langchain-openai` and suitable API credentials
 
 ## Recent Improvements
 
