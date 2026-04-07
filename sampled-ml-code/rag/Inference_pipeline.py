@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
-
-from training_pipeline import FineTunedLLM
+from typing import Any, Dict, List, Tuple
 
 
 def build_prompt(query: str, retrieved_chunks: List[Tuple[float, Dict]]) -> str:
@@ -18,7 +16,12 @@ def build_prompt(query: str, retrieved_chunks: List[Tuple[float, Dict]]) -> str:
 
 @dataclass
 class LLMTwin:
-    model: FineTunedLLM
+    model: Any
 
     def answer(self, query: str, retrieved_chunks: List[Tuple[float, Dict]]) -> str:
-        return self.model.generate(build_prompt(query, retrieved_chunks))
+        prompt = build_prompt(query, retrieved_chunks)
+        if hasattr(self.model, "generate"):
+            return self.model.generate(prompt)
+        if hasattr(self.model, "invoke"):
+            return self.model.invoke(prompt)
+        raise TypeError("LLMTwin model must implement either `generate` or `invoke`.")
