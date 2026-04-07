@@ -34,7 +34,7 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
    - optional LangChain/FAISS feature-store builders
    - local Hugging Face embedding and LLM helpers
    - question rewriting helpers
-3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever.
+3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever, plus a hybrid `MultiPathRetriever` that fuses lexical and vector search.
 4. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) contains:
    - prompt construction
    - `LLMTwin`
@@ -55,7 +55,7 @@ When [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/r
 1. creates the sample in-memory document store
 2. builds the toy feature store and fallback model path
 3. tries to load markdown files from `./data/`
-4. tries to build a LangChain feature store, FAISS retriever, rewrite chain, RAG chain, and multi-step inference agent
+4. tries to build a LangChain feature store, hybrid retrievers, a rewrite chain, a RAG chain, and a multi-step inference agent
 5. uses that richer stack if initialization succeeds
 6. falls back to the toy pipeline if dependencies or data are missing
 
@@ -69,7 +69,15 @@ The toy retrieval stack supports three strategies:
 - `bm25`: lexical retrieval using BM25-style scoring
 - `hnsw`: an approximate dense retrieval path with a lightweight HNSW-style neighbor graph
 
-Query expansion is also available and generates a few synonym-based variants before retrieval.
+Query expansion is also available and generates a few synonym-based variants before retrieval. In the richer LangChain path, retrieval can also combine multiple data paths, such as dense vector search and BM25 lexical search.
+
+In the current LangChain-backed setup, hybrid retrieval is implemented with `MultiPathRetriever`, which:
+
+- runs BM25 and vector retrieval in parallel paths
+- fuses the scores with configurable weights
+- deduplicates overlapping results
+- respects runtime `top_k` limits from the API layer
+- keeps the strongest items and annotates metadata with retrieval provenance
 
 ## Inference Features
 
@@ -83,8 +91,10 @@ Multi-step querying now lives in [Inference_pipeline.py](/Users/linghuang/Git/ML
 
 In the current implementation, the multi-step agent can:
 
+- use three query-understanding strategies: query rewrite, multi-question decomposition, and HyDE-style hypothetical expansion
 - detect when the current request is ambiguous or too conversational for tool calls
 - rewrite it into a shorter, tool-friendly working query without adding new details
+- decompose bundled requests into smaller retrieval subquestions
 - search for child-friendly attractions
 - search for nearby restaurants
 - combine tool outputs into a final answer
@@ -242,11 +252,12 @@ The optional richer path uses the following sequence:
 2. split them with `RecursiveCharacterTextSplitter`
 3. build embeddings with `HuggingFaceEmbeddings`
 4. create a FAISS vector store
-5. expose a retriever with `k = TOP_K`
-6. load a local Hugging Face text-generation model
-7. build a question rewrite chain for retrieval
-8. build a RAG chain
-9. build a multi-step inference agent with ambiguity rewriting plus travel-oriented tools
+5. build a BM25 retriever over the same chunk set
+6. fuse vector and lexical results through a multi-path retriever
+7. load a local Hugging Face text-generation model
+8. build a question rewrite chain for retrieval
+9. build a RAG chain
+10. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and travel-oriented tools
 
 This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
 
@@ -254,7 +265,7 @@ This lets the project move beyond the toy embedder and toy vector store while al
 
 [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) now includes:
 
-- runtime request logging with `EvaluationTracker`
+- runtime request logging with `EvaluationTracker` and a backward-compatible `Monitor` alias
 - evaluation examples and datasets
 - Recall@K utilities
 - judge-chain construction
@@ -282,10 +293,14 @@ The codebase has been refactored to be easier to extend:
 - centralized app assembly in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py)
 - cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
 - added three retrieval modes: `dense`, `bm25`, and `hnsw`
+- added hybrid multi-path retrieval for the LangChain-backed path
+- improved LangChain retrieval so API `top_k` is honored consistently
+- removed redundant embedding initialization during rich-stack startup
 - added query expansion
 - added question rewriting
 - moved multi-step agent behavior into [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py)
 - added ambiguity-first query rewriting for tool-friendly multi-step planning
+- clarified the three query-understanding strategies: rewrite, multi-question decomposition, and HyDE
 - added optional LangChain, FAISS, local Hugging Face, and LangGraph integration
 - expanded [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) to support evaluation workflows
 - kept a graceful fallback path for minimal environments

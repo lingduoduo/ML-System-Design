@@ -16,14 +16,13 @@ from feature_pipeline import (
     LangChainFeatureStore,
     SimpleEmbedder,
     VectorDB,
-    build_embeddings,
     build_feature_store,
     build_langchain_feature_store,
     build_local_hf_llm,
     create_rewrite_chain,
 )
 from monitoring import EvaluationTracker
-from retriever import LangChainRetrievalClient, RetrievalClient
+from retriever import LangChainRetrievalClient, MultiPathRetriever, RetrievalClient
 from training_pipeline import (
     ExperimentTracker,
     FineTunedLLM,
@@ -57,6 +56,8 @@ def build_rag_system() -> RAGSystem:
     tracker, registry, accepted_model, _ = train_and_register_model(instruct_dataset)
 
     try:
+        from langchain_community.retrievers import BM25Retriever
+
         logging.info("Loading documents from %s (pattern: %s)...", DOCUMENT_PATH, FILE_PATTERN)
         langchain_feature_store = build_langchain_feature_store(
             document_path=DOCUMENT_PATH,
@@ -67,10 +68,17 @@ def build_rag_system() -> RAGSystem:
         )
         logging.info("Loaded %s documents", len(langchain_feature_store.documents))
         logging.info("Created %s chunks", len(langchain_feature_store.chunks))
-        embeddings = build_embeddings()
         logging.info("Building FAISS vector store...")
+        embeddings = langchain_feature_store.embeddings
         vectorstore = langchain_feature_store.vector_store
-        retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+        bm25_retriever = BM25Retriever.from_documents(langchain_feature_store.chunks)
+        bm25_retriever.k = TOP_K
+        retriever = MultiPathRetriever(
+            bm25_retriever=bm25_retriever,
+            vectorstore=vectorstore,
+            vector_top_k=TOP_K,
+            bm25_top_k=TOP_K,
+        )
         llm = build_local_hf_llm()
         rewrite_chain = create_rewrite_chain(llm)
         rag_chain = build_rag_chain(retriever, llm)

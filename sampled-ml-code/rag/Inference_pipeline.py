@@ -130,8 +130,57 @@ class AgentState(TypedDict, total=False):
     final_answer: Optional[str]
 
 
+def _invoke_text_model(model: Any, prompt: Any, variables: Dict[str, Any]) -> str:
+    deps = _import_agent_dependencies()
+    chain = prompt | model | deps["StrOutputParser"]()
+    result = chain.invoke(variables)
+    return result.strip() if isinstance(result, str) else str(result).strip()
+
+
+def generate_hyde_context_for_query(llm: Any, query: str) -> str:
+    deps = _import_agent_dependencies()
+    prompt = deps["ChatPromptTemplate"].from_messages(
+        [
+            (
+                "system",
+                "You generate a short hypothetical travel note for retrieval support.\n"
+                "Rules:\n"
+                "- Infer the likely travel intent behind an ambiguous request.\n"
+                "- Keep it short, around 2 to 4 sentences.\n"
+                "- Stay generic and plausible.\n"
+                "- Do not invent exact names, addresses, prices, or schedules.\n"
+                "- Focus on the type of place, companion type, and nearby needs if implied.\n"
+                "- Return only the hypothetical note.",
+            ),
+            ("human", "Original query:\n{query}"),
+        ]
+    )
+    return _invoke_text_model(llm, prompt, {"query": query})
+
+
+def decompose_query_into_subquestions(llm: Any, query: str) -> str:
+    deps = _import_agent_dependencies()
+    prompt = deps["ChatPromptTemplate"].from_messages(
+        [
+            (
+                "system",
+                "You decompose travel queries into short subquestions for retrieval.\n"
+                "Rules:\n"
+                "- Break the request into 2 or 3 focused retrieval questions.\n"
+                "- Keep each subquestion concise.\n"
+                "- Preserve the user's intent.\n"
+                "- Do not add unsupported details.\n"
+                "- Return only the subquestions, one per line.",
+            ),
+            ("human", "Original query:\n{query}"),
+        ]
+    )
+    return _invoke_text_model(llm, prompt, {"query": query})
+
+
 def rewrite_ambiguous_query_for_tools(llm: Any, query: str) -> str:
     deps = _import_agent_dependencies()
+    hyde_context = generate_hyde_context_for_query(llm, query)
     prompt = deps["ChatPromptTemplate"].from_messages(
         [
             (
@@ -141,14 +190,21 @@ def rewrite_ambiguous_query_for_tools(llm: Any, query: str) -> str:
                 "- Keep the rewrite concise and easy for a tool call to use.\n"
                 "- Preserve the user's intent.\n"
                 "- Do not add extra detail that the user did not provide.\n"
-                "- Resolve vague wording into a cleaner search-ready query when possible.\n"
+                "- Use the hypothetical travel note only to disambiguate, not to add specifics.\n"
+                "- Prefer a short search-ready query that is easy for MCP-style tool calls to consume.\n"
                 "- Return only the rewritten query.",
             ),
-            ("human", "Original query:\n{query}"),
+            (
+                "human",
+                "Original query:\n{query}\n\nHypothetical travel note:\n{hyde_context}",
+            ),
         ]
     )
-    chain = prompt | llm | deps["StrOutputParser"]()
-    rewritten_query = chain.invoke({"query": query}).strip()
+    rewritten_query = _invoke_text_model(
+        llm,
+        prompt,
+        {"query": query, "hyde_context": hyde_context},
+    )
     return rewritten_query or query
 
 
@@ -164,20 +220,28 @@ def create_planner_prompt() -> Any:
                 "1) RewriteAmbiguousQuery(query: str)\n"
                 "   - Use first when the user query is ambiguous, underspecified, or too conversational for tool calls.\n"
                 "   - Rewrite it into a short, search-ready query for later tool use.\n"
+                "   - This tool uses a HyDE-style hypothetical travel note internally before producing the final rewrite.\n"
                 "   - Do not add new details.\n"
-                "2) SearchChildFriendlyAttractions(query: str)\n"
+                "2) DecomposeQueryIntoSubquestions(query: str)\n"
+                "   - Use when the request contains multiple needs or should be handled as several smaller retrieval questions.\n"
+                "   - Return short subquestions the planner can use in later tool calls.\n"
+                "3) SearchChildFriendlyAttractions(query: str)\n"
                 "   - Use to find child-friendly attractions.\n"
-                "3) SearchNearbyRestaurants(query: str)\n"
+                "4) SearchNearbyRestaurants(query: str)\n"
                 "   - Use to find restaurants near attractions/areas.\n\n"
                 "Rules:\n"
                 "- Decide the next step.\n"
                 "- First check whether the current query is ambiguous.\n"
-                "- If it is ambiguous, call RewriteAmbiguousQuery before other tools.\n"
+                "- Use three query-understanding strategies when helpful: concise query rewrite, multi-question decomposition, and HyDE-style disambiguation.\n"
+                "- If the query is ambiguous, call RewriteAmbiguousQuery before other retrieval tools.\n"
+                "- If the request bundles multiple needs, call DecomposeQueryIntoSubquestions before retrieval tools.\n"
                 "- The rewrite must stay concise and must not become more detailed than the original request.\n"
                 "- Prefer short, tool-friendly queries that are easy for MCP-style function calls to consume.\n"
                 "- Output ONLY a JSON object (no markdown, no extra text).\n"
                 "- If you need a tool, output:\n"
                 '  {"action": "tool", "tool_name": "RewriteAmbiguousQuery", "tool_input": "..."}\n'
+                "  OR\n"
+                '  {"action": "tool", "tool_name": "DecomposeQueryIntoSubquestions", "tool_input": "..."}\n'
                 "  OR\n"
                 '  {"action": "tool", "tool_name": "SearchChildFriendlyAttractions", "tool_input": "..."}\n'
                 "  OR\n"
@@ -258,6 +322,8 @@ def tool_node(state: AgentState, ctx: GraphContext) -> AgentState:
     if tool_name == "RewriteAmbiguousQuery":
         observation = rewrite_ambiguous_query_for_tools(ctx.llm, tool_input)
         state["active_query"] = observation
+    elif tool_name == "DecomposeQueryIntoSubquestions":
+        observation = decompose_query_into_subquestions(ctx.llm, tool_input)
     elif tool_name == "SearchChildFriendlyAttractions":
         observation = search_child_friendly_attractions(ctx.rag_chain, tool_input)
     elif tool_name == "SearchNearbyRestaurants":

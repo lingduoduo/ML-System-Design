@@ -13,6 +13,14 @@ from rag_system import RAGSystem, build_rag_system
 app = FastAPI()
 
 
+def _count_chunks(system: RAGSystem) -> int:
+    if system.langchain_feature_store is not None:
+        return len(system.langchain_feature_store.chunks)
+    if hasattr(system.vector_db, "rows"):
+        return len(system.vector_db.rows)
+    return 0
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 2
@@ -33,7 +41,7 @@ def healthcheck() -> dict:
     return {
         "status": "ok",
         "documents": len(system.db.find_all()),
-        "chunks": len(system.vector_db.rows),
+        "chunks": _count_chunks(system),
         "deployment": system.deployment_info,
         "retrieval_modes": ["dense", "bm25", "hnsw"],
         "multi_step_available": system.multi_step_agent is not None,
