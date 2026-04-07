@@ -39,6 +39,8 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
    - prompt construction
    - `LLMTwin`
    - LangChain RAG chain construction
+   - `QueryUnderstandingEngine` for rewrite, HyDE, and decomposition
+   - `RetrievalToolset` for domain retrieval actions
    - multi-step agent planning and execution
 5. [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) contains:
    - evaluation tracking
@@ -47,6 +49,8 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
    - retrieval evaluation metrics
 6. [deploy.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/deploy.py) returns simple deployment metadata.
 7. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py) exposes the FastAPI API and caches the initialized system.
+
+The richer LangChain-backed runtime is assembled through `RichRAGBuilder` in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py), which keeps loading, hybrid retrieval, reranking, and agent setup in one place.
 
 ### Startup behavior
 
@@ -76,6 +80,7 @@ In the current LangChain-backed setup, hybrid retrieval is implemented with `Mul
 - runs BM25 and vector retrieval in parallel paths
 - fuses the scores with configurable weights
 - deduplicates overlapping results
+- can rerank fused candidates with the local LLM
 - respects runtime `top_k` limits from the API layer
 - keeps the strongest items and annotates metadata with retrieval provenance
 
@@ -85,7 +90,7 @@ The inference layer supports three levels of behavior:
 
 - standard single-step answer generation
 - optional question rewriting before retrieval
-- optional multi-step planning for travel-style requests with ambiguity-aware query rewriting
+- optional multi-step planning with ambiguity-aware query rewriting
 
 Multi-step querying now lives in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py), not in a separate module.
 
@@ -95,35 +100,8 @@ In the current implementation, the multi-step agent can:
 - detect when the current request is ambiguous or too conversational for tool calls
 - rewrite it into a shorter, tool-friendly working query without adding new details
 - decompose bundled requests into smaller retrieval subquestions
-- search for child-friendly attractions
-- search for nearby restaurants
+- run domain-specific retrieval tools
 - combine tool outputs into a final answer
-
-## Repository Layout
-
-```text
-RAG/
-├── README.md
-├── serving.py
-├── rag_system.py
-├── data_collection_pipeline.py
-├── feature_pipeline.py
-├── retriever.py
-├── training_pipeline.py
-├── Inference_pipeline.py
-├── deploy.py
-└── monitoring.py
-```
-
-## Requirements
-
-### Minimal setup
-
-This is enough to run the toy in-memory pipeline:
-
-```bash
-pip install fastapi uvicorn pydantic numpy
-```
 
 ### Optional LangChain + FAISS + local HF setup
 
@@ -253,11 +231,12 @@ The optional richer path uses the following sequence:
 3. build embeddings with `HuggingFaceEmbeddings`
 4. create a FAISS vector store
 5. build a BM25 retriever over the same chunk set
-6. fuse vector and lexical results through a multi-path retriever
-7. load a local Hugging Face text-generation model
-8. build a question rewrite chain for retrieval
-9. build a RAG chain
-10. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and travel-oriented tools
+6. load a local Hugging Face text-generation model
+7. fuse vector and lexical results through a multi-path retriever
+8. rerank the fused candidates with the local LLM
+9. build a question rewrite chain for retrieval
+10. build a RAG chain
+11. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and domain tools
 
 This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
 
@@ -294,6 +273,7 @@ The codebase has been refactored to be easier to extend:
 - cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
 - added three retrieval modes: `dense`, `bm25`, and `hnsw`
 - added hybrid multi-path retrieval for the LangChain-backed path
+- added LLM-based reranking after hybrid retrieval fusion
 - improved LangChain retrieval so API `top_k` is honored consistently
 - removed redundant embedding initialization during rich-stack startup
 - added query expansion
@@ -301,6 +281,7 @@ The codebase has been refactored to be easier to extend:
 - moved multi-step agent behavior into [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py)
 - added ambiguity-first query rewriting for tool-friendly multi-step planning
 - clarified the three query-understanding strategies: rewrite, multi-question decomposition, and HyDE
+- refactored the inference and runtime setup around dedicated classes for query understanding, tool execution, and rich-runtime assembly
 - added optional LangChain, FAISS, local Hugging Face, and LangGraph integration
 - expanded [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) to support evaluation workflows
 - kept a graceful fallback path for minimal environments

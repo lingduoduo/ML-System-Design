@@ -22,7 +22,12 @@ from feature_pipeline import (
     create_rewrite_chain,
 )
 from monitoring import EvaluationTracker
-from retriever import LangChainRetrievalClient, MultiPathRetriever, RetrievalClient
+from retriever import (
+    LangChainRetrievalClient,
+    MultiPathRetriever,
+    RetrievalClient,
+    build_llm_reranker,
+)
 from training_pipeline import (
     ExperimentTracker,
     FineTunedLLM,
@@ -49,6 +54,71 @@ class RAGSystem:
     multi_step_agent: Any | None = None
 
 
+@dataclass
+class RichRAGRuntime:
+    embedder: Any
+    vectorstore: Any
+    retrieval_client: LangChainRetrievalClient
+    llm_twin: LLMTwin
+    rewrite_chain: Any
+    rag_chain: Any
+    multi_step_agent: Any
+    langchain_feature_store: LangChainFeatureStore
+
+
+@dataclass
+class RichRAGBuilder:
+    document_path: str = DOCUMENT_PATH
+    file_pattern: str = FILE_PATTERN
+    chunk_size: int = CHUNK_SIZE
+    chunk_overlap: int = CHUNK_OVERLAP
+    top_k: int = TOP_K
+
+    def build(self) -> RichRAGRuntime:
+        from langchain_community.retrievers import BM25Retriever
+
+        logging.info("Loading documents from %s (pattern: %s)...", self.document_path, self.file_pattern)
+        langchain_feature_store = build_langchain_feature_store(
+            document_path=self.document_path,
+            file_pattern=self.file_pattern,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            top_k=self.top_k,
+        )
+        logging.info("Loaded %s documents", len(langchain_feature_store.documents))
+        logging.info("Created %s chunks", len(langchain_feature_store.chunks))
+        logging.info("Building FAISS vector store...")
+
+        llm = build_local_hf_llm()
+        bm25_retriever = BM25Retriever.from_documents(langchain_feature_store.chunks)
+        bm25_retriever.k = self.top_k
+        hybrid_retriever = MultiPathRetriever(
+            bm25_retriever=bm25_retriever,
+            vectorstore=langchain_feature_store.vector_store,
+            vector_top_k=self.top_k,
+            bm25_top_k=self.top_k,
+            reranker=build_llm_reranker(llm),
+            rerank_top_k=self.top_k,
+        )
+
+        retrieval_client = LangChainRetrievalClient(retriever=hybrid_retriever)
+        llm_twin = LLMTwin(model=llm)
+        rewrite_chain = create_rewrite_chain(llm)
+        rag_chain = build_rag_chain(hybrid_retriever, llm)
+        multi_step_agent = build_agent_graph(GraphContext(llm=llm, rag_chain=rag_chain))
+
+        return RichRAGRuntime(
+            embedder=langchain_feature_store.embeddings,
+            vectorstore=langchain_feature_store.vector_store,
+            retrieval_client=retrieval_client,
+            llm_twin=llm_twin,
+            rewrite_chain=rewrite_chain,
+            rag_chain=rag_chain,
+            multi_step_agent=multi_step_agent,
+            langchain_feature_store=langchain_feature_store,
+        )
+
+
 def build_rag_system() -> RAGSystem:
     db = build_document_store()
     evaluator = EvaluationTracker()
@@ -56,55 +126,24 @@ def build_rag_system() -> RAGSystem:
     tracker, registry, accepted_model, _ = train_and_register_model(instruct_dataset)
 
     try:
-        from langchain_community.retrievers import BM25Retriever
-
-        logging.info("Loading documents from %s (pattern: %s)...", DOCUMENT_PATH, FILE_PATTERN)
-        langchain_feature_store = build_langchain_feature_store(
-            document_path=DOCUMENT_PATH,
-            file_pattern=FILE_PATTERN,
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            top_k=TOP_K,
-        )
-        logging.info("Loaded %s documents", len(langchain_feature_store.documents))
-        logging.info("Created %s chunks", len(langchain_feature_store.chunks))
-        logging.info("Building FAISS vector store...")
-        embeddings = langchain_feature_store.embeddings
-        vectorstore = langchain_feature_store.vector_store
-        bm25_retriever = BM25Retriever.from_documents(langchain_feature_store.chunks)
-        bm25_retriever.k = TOP_K
-        retriever = MultiPathRetriever(
-            bm25_retriever=bm25_retriever,
-            vectorstore=vectorstore,
-            vector_top_k=TOP_K,
-            bm25_top_k=TOP_K,
-        )
-        llm = build_local_hf_llm()
-        rewrite_chain = create_rewrite_chain(llm)
-        rag_chain = build_rag_chain(retriever, llm)
-        multi_step_agent = build_agent_graph(GraphContext(llm=llm, rag_chain=rag_chain))
-
-        retrieval_client: RetrievalClient | LangChainRetrievalClient = LangChainRetrievalClient(
-            retriever=retriever
-        )
-        llm_twin = LLMTwin(model=llm)
+        runtime = RichRAGBuilder().build()
         deployment_info = Deployer().deploy(FineTunedLLM(model_name="local-hf-llm"))
 
         return RAGSystem(
             db=db,
-            embedder=embeddings,
-            vector_db=vectorstore,
+            embedder=runtime.embedder,
+            vector_db=runtime.vectorstore,
             instruct_dataset=instruct_dataset,
-            retrieval_client=retrieval_client,
-            llm_twin=llm_twin,
+            retrieval_client=runtime.retrieval_client,
+            llm_twin=runtime.llm_twin,
             evaluator=evaluator,
             tracker=tracker,
             registry=registry,
             deployment_info=deployment_info,
-            langchain_feature_store=langchain_feature_store,
-            rewrite_chain=rewrite_chain,
-            rag_chain=rag_chain,
-            multi_step_agent=multi_step_agent,
+            langchain_feature_store=runtime.langchain_feature_store,
+            rewrite_chain=runtime.rewrite_chain,
+            rag_chain=runtime.rag_chain,
+            multi_step_agent=runtime.multi_step_agent,
         )
     except (ImportError, FileNotFoundError, ValueError) as exc:
         logging.warning("Falling back to toy in-memory RAG pipeline: %s", exc)
