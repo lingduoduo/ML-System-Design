@@ -110,7 +110,7 @@ def search_nearby_restaurants(rag_chain: Any, query: str) -> str:
     logging.info("[Tool] Searching nearby restaurants: %s", query)
     try:
         tool_query = (
-            "Find recommended restaurants near the mentioned attractions or areas. "
+            "Find recommended restaurants near the mentioned attractions/areas. "
             "Return a short list with brief reasons.\n\n"
             f"User request: {query}"
         )
@@ -125,8 +125,31 @@ def search_nearby_restaurants(rag_chain: Any, query: str) -> str:
 class AgentState(TypedDict, total=False):
     messages: List[Any]
     scratchpad: str
+    active_query: str
     last_action: Optional[Dict[str, Any]]
     final_answer: Optional[str]
+
+
+def rewrite_ambiguous_query_for_tools(llm: Any, query: str) -> str:
+    deps = _import_agent_dependencies()
+    prompt = deps["ChatPromptTemplate"].from_messages(
+        [
+            (
+                "system",
+                "You rewrite ambiguous travel queries for downstream tool and function calls.\n"
+                "Rules:\n"
+                "- Keep the rewrite concise and easy for a tool call to use.\n"
+                "- Preserve the user's intent.\n"
+                "- Do not add extra detail that the user did not provide.\n"
+                "- Resolve vague wording into a cleaner search-ready query when possible.\n"
+                "- Return only the rewritten query.",
+            ),
+            ("human", "Original query:\n{query}"),
+        ]
+    )
+    chain = prompt | llm | deps["StrOutputParser"]()
+    rewritten_query = chain.invoke({"query": query}).strip()
+    return rewritten_query or query
 
 
 def create_planner_prompt() -> Any:
@@ -138,21 +161,35 @@ def create_planner_prompt() -> Any:
                 "You are a travel assistant agent.\n"
                 "You can use tools to gather information, then write a final answer.\n\n"
                 "Available tools:\n"
-                "1) SearchChildFriendlyAttractions(query: str)\n"
+                "1) RewriteAmbiguousQuery(query: str)\n"
+                "   - Use first when the user query is ambiguous, underspecified, or too conversational for tool calls.\n"
+                "   - Rewrite it into a short, search-ready query for later tool use.\n"
+                "   - Do not add new details.\n"
+                "2) SearchChildFriendlyAttractions(query: str)\n"
                 "   - Use to find child-friendly attractions.\n"
-                "2) SearchNearbyRestaurants(query: str)\n"
-                "   - Use to find restaurants near attractions or areas.\n\n"
+                "3) SearchNearbyRestaurants(query: str)\n"
+                "   - Use to find restaurants near attractions/areas.\n\n"
                 "Rules:\n"
                 "- Decide the next step.\n"
-                "- Output ONLY a JSON object.\n"
+                "- First check whether the current query is ambiguous.\n"
+                "- If it is ambiguous, call RewriteAmbiguousQuery before other tools.\n"
+                "- The rewrite must stay concise and must not become more detailed than the original request.\n"
+                "- Prefer short, tool-friendly queries that are easy for MCP-style function calls to consume.\n"
+                "- Output ONLY a JSON object (no markdown, no extra text).\n"
                 "- If you need a tool, output:\n"
+                '  {"action": "tool", "tool_name": "RewriteAmbiguousQuery", "tool_input": "..."}\n'
+                "  OR\n"
                 '  {"action": "tool", "tool_name": "SearchChildFriendlyAttractions", "tool_input": "..."}\n'
                 "  OR\n"
                 '  {"action": "tool", "tool_name": "SearchNearbyRestaurants", "tool_input": "..."}\n'
                 "- If you are ready to answer, output:\n"
-                '  {"action": "final", "answer": "..."}\n',
+                '  {"action": "final", "answer": "..."}\n'
+                "- Use the latest rewritten query if one exists.",
             ),
-            ("human", "User request:\n{user_query}\n\nScratchpad so far:\n{scratchpad}\n"),
+            (
+                "human",
+                "User request:\n{user_query}\n\nCurrent working query:\n{active_query}\n\nScratchpad so far:\n{scratchpad}\n",
+            ),
         ]
     )
 
@@ -179,9 +216,16 @@ def planner_node(state: AgentState, ctx: GraphContext) -> AgentState:
             user_query = message.content
             break
 
+    active_query = state.get("active_query", user_query).strip() or user_query
     scratchpad = state.get("scratchpad", "").strip() or "(empty)"
     chain = create_planner_prompt() | ctx.llm | deps["StrOutputParser"]()
-    raw = chain.invoke({"user_query": user_query, "scratchpad": scratchpad})
+    raw = chain.invoke(
+        {
+            "user_query": user_query,
+            "active_query": active_query,
+            "scratchpad": scratchpad,
+        }
+    )
     logging.info("[Planner raw]\n%s", raw)
 
     try:
@@ -203,8 +247,18 @@ def tool_node(state: AgentState, ctx: GraphContext) -> AgentState:
     action = state.get("last_action") or {}
     tool_name = action.get("tool_name")
     tool_input = action.get("tool_input", "")
+    active_query = state.get("active_query", tool_input).strip()
 
-    if tool_name == "SearchChildFriendlyAttractions":
+    if not tool_name:
+        return state
+
+    if not tool_input:
+        tool_input = active_query
+
+    if tool_name == "RewriteAmbiguousQuery":
+        observation = rewrite_ambiguous_query_for_tools(ctx.llm, tool_input)
+        state["active_query"] = observation
+    elif tool_name == "SearchChildFriendlyAttractions":
         observation = search_child_friendly_attractions(ctx.rag_chain, tool_input)
     elif tool_name == "SearchNearbyRestaurants":
         observation = search_nearby_restaurants(ctx.rag_chain, tool_input)
@@ -256,6 +310,7 @@ def run_multi_step_search(agent_app: Any, query: str, max_steps: int = 6) -> str
     initial_state: AgentState = {
         "messages": [deps["HumanMessage"](content=query)],
         "scratchpad": "",
+        "active_query": query,
     }
     output = agent_app.invoke(initial_state, config={"recursion_limit": max_steps})
     answer = output.get("final_answer") or ""

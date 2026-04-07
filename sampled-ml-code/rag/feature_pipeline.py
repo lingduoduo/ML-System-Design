@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 import logging
 from math import log
+import re
 from typing import Any, Dict, Iterable, List, Literal, Tuple
 
 import numpy as np
@@ -134,11 +135,16 @@ def create_rewrite_prompt() -> Any:
     deps = _import_langchain_dependencies()
     return deps["PromptTemplate"].from_template(
         (
-            "Rewrite the user's question so it is clearer, more specific, and better suited "
-            "for retrieval over a knowledge base. Preserve the original intent. "
-            "Return only the rewritten question.\n\n"
-            "Question: {question}\n"
-            "Rewritten question:"
+            "You are a travel assistant. Please rewrite the following user question into a\n"
+            "clearer and more complete form.\n\n"
+            "Original question:\n"
+            "{question}\n\n"
+            "Requirements for the rewritten question:\n"
+            "- Be more specific\n"
+            "- Include the type of travel (family / couple / road trip, etc.)\n"
+            "- Help the system retrieve relevant information more accurately\n\n"
+            "Output format:\n"
+            "[Rewritten] - <your rewritten question>"
         )
     )
 
@@ -153,6 +159,12 @@ def rewrite_question(rewrite_chain: Any, question: str) -> str:
     logging.info("Rewriting question: %s", question)
     try:
         rewritten_question = rewrite_chain.invoke({"question": question}).strip()
+        rewritten_question = re.sub(
+            r"^\[Rewritten\]\s*-\s*",
+            "",
+            rewritten_question,
+            flags=re.IGNORECASE,
+        ).strip()
         if not rewritten_question:
             logging.warning("Rewritten question is empty")
             return "No valid rewritten result"

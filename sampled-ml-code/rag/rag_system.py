@@ -22,7 +22,7 @@ from feature_pipeline import (
     build_local_hf_llm,
     create_rewrite_chain,
 )
-from monitoring import Monitor
+from monitoring import EvaluationTracker
 from retriever import LangChainRetrievalClient, RetrievalClient
 from training_pipeline import (
     ExperimentTracker,
@@ -40,7 +40,7 @@ class RAGSystem:
     instruct_dataset: list[dict]
     retrieval_client: RetrievalClient | LangChainRetrievalClient
     llm_twin: LLMTwin
-    monitor: Monitor
+    evaluator: EvaluationTracker
     tracker: ExperimentTracker
     registry: ModelRegistry
     deployment_info: dict
@@ -52,7 +52,7 @@ class RAGSystem:
 
 def build_rag_system() -> RAGSystem:
     db = build_document_store()
-    monitor = Monitor()
+    evaluator = EvaluationTracker()
     embedder, vector_db, instruct_dataset = build_feature_store(db.find_all())
     tracker, registry, accepted_model, _ = train_and_register_model(instruct_dataset)
 
@@ -89,7 +89,7 @@ def build_rag_system() -> RAGSystem:
             instruct_dataset=instruct_dataset,
             retrieval_client=retrieval_client,
             llm_twin=llm_twin,
-            monitor=monitor,
+            evaluator=evaluator,
             tracker=tracker,
             registry=registry,
             deployment_info=deployment_info,
@@ -115,7 +115,7 @@ def build_rag_system() -> RAGSystem:
         instruct_dataset=instruct_dataset,
         retrieval_client=retrieval_client,
         llm_twin=llm_twin,
-        monitor=monitor,
+        evaluator=evaluator,
         tracker=tracker,
         registry=registry,
         deployment_info=deployment_info,

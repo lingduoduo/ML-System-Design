@@ -57,7 +57,7 @@ def generate(req: QueryRequest) -> dict:
             }
 
         response = run_multi_step_search(system.multi_step_agent, req.query)
-        system.monitor.log_request(req.query, [], response)
+        system.evaluator.record_run(req.query, [], response)
         return {
             "query": req.query,
             "rewritten_query": None,
@@ -82,7 +82,7 @@ def generate(req: QueryRequest) -> dict:
         expand_query=req.expand_query,
     )
     response = system.llm_twin.answer(retrieval_query, retrieved)
-    system.monitor.log_request(retrieval_query, retrieved, response)
+    system.evaluator.record_run(retrieval_query, retrieved, response)
 
     return {
         "query": req.query,

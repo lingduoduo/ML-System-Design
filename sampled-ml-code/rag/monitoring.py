@@ -4,27 +4,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
-
-
-@dataclass
-class Monitor:
-    history: List[Dict] = field(default_factory=list)
-
-    def log_request(self, query: str, retrieved: List[Tuple[float, Dict]], response: str) -> Dict:
-        event = {
-            "query": query,
-            "retrieved_chunks": [metadata["text"] for _, metadata in retrieved],
-            "response_preview": response[:200],
-        }
-        self.history.append(event)
-        return event
 
 
 @dataclass
@@ -36,8 +22,8 @@ class EvalExample:
 
 
 @dataclass
-class GroundTruthDataset:
-    data: List[EvalExample] = field(default_factory=list)
+class EvaluationDataset:
+    examples: List[EvalExample] = field(default_factory=list)
 
     def add_example(
         self,
@@ -46,7 +32,7 @@ class GroundTruthDataset:
         ground_truth_answer: str,
         gold_doc_ids: List[str],
     ) -> None:
-        self.data.append(
+        self.examples.append(
             EvalExample(
                 original_q=original_q,
                 rewritten_q=rewritten_q,
@@ -57,23 +43,48 @@ class GroundTruthDataset:
         logging.info("Added a new evaluation example")
 
     def get_all_examples(self) -> List[EvalExample]:
-        return self.data
+        return list(self.examples)
+
+
+class GroundTruthDataset(EvaluationDataset):
+    """Backward-compatible alias for older imports."""
+
+
+@dataclass
+class EvaluationTracker:
+    history: List[Dict[str, Any]] = field(default_factory=list)
+
+    def record_run(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:
+        event = {
+            "query": query,
+            "retrieved_chunks": [metadata.get("text", "") for _, metadata in retrieved],
+            "response_preview": response[:200],
+        }
+        self.history.append(event)
+        return event
+
+    def log_request(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:
+        return self.record_run(query, retrieved, response)
+
+
+class Monitor(EvaluationTracker):
+    """Backward-compatible alias for older imports."""
 
 
 def recall_at_k(retrieved_doc_ids: List[str], gold_doc_ids: List[str], k: int) -> float:
     if not gold_doc_ids:
         return 0.0
-    topk = set(retrieved_doc_ids[:k])
+    retrieved_top_k = set(retrieved_doc_ids[:k])
     gold = set(gold_doc_ids)
-    return len(topk.intersection(gold)) / len(gold)
+    return len(retrieved_top_k & gold) / len(gold)
 
 
 def get_retrieved_doc_ids(docs: List[Any], id_key: str = "source") -> List[str]:
-    identifiers = []
+    doc_ids: List[str] = []
     for doc in docs:
         metadata = getattr(doc, "metadata", {}) or {}
-        identifiers.append(str(metadata.get(id_key, "")))
-    return identifiers
+        doc_ids.append(str(metadata.get(id_key, "")))
+    return doc_ids
 
 
 def _import_judge_dependencies() -> Dict[str, Any]:
@@ -81,9 +92,7 @@ def _import_judge_dependencies() -> Dict[str, Any]:
         from langchain_core.output_parsers import StrOutputParser
         from langchain_core.prompts import ChatPromptTemplate
     except ImportError as exc:
-        raise ImportError(
-            "Judge-based evaluation requires `langchain-core`."
-        ) from exc
+        raise ImportError("Judge-based evaluation requires `langchain-core`.") from exc
 
     return {
         "ChatPromptTemplate": ChatPromptTemplate,
@@ -97,15 +106,14 @@ def create_judge_prompt() -> Any:
         [
             (
                 "system",
-                "You are a strict evaluator for a RAG QA system.\n"
-                "Given a question, a candidate answer, and a reference answer, "
+                "You are a strict evaluator (judge) for a RAG QA system.\n"
+                "Given a question, a candidate answer, and a reference answer,\n"
                 "decide if the candidate answer is correct.\n\n"
                 "Return ONLY valid JSON with keys:\n"
                 '  "verdict": "correct" | "incorrect"\n'
                 '  "score": number between 0 and 1\n'
                 '  "rationale": short explanation\n\n'
-                "Be conservative: if the candidate misses key facts from the reference, "
-                "mark it incorrect.\n"
+                "Be conservative: if the candidate misses key facts from the reference, mark incorrect.\n"
                 "Do not output any extra text besides JSON.",
             ),
             (
@@ -123,22 +131,16 @@ def build_judge_chain(judge_llm: Any) -> Any:
     return create_judge_prompt() | judge_llm | deps["StrOutputParser"]()
 
 
-def safe_json_loads(text: str) -> Dict[str, Any]:
-    text = text.strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        text = text[start:end + 1]
-    return json.loads(text)
-
-
-def _extract_json_object(text: str) -> str | None:
-    text = text.strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return text[start:end + 1]
+def _extract_json_object(text: str) -> Optional[str]:
+    match = re.search(r"\{.*\}", text.strip(), flags=re.DOTALL)
+    if match:
+        return match.group(0)
     return None
+
+
+def safe_json_loads(text: str) -> Dict[str, Any]:
+    extracted = _extract_json_object(text)
+    return json.loads(extracted if extracted is not None else text.strip())
 
 
 def _parse_non_json_judge(text: str) -> Dict[str, Any]:
@@ -164,17 +166,15 @@ def judge_answer(judge_chain: Any, question: str, answer: str, reference: str) -
     raw = judge_chain.invoke({"question": question, "answer": answer, "reference": reference})
 
     try:
-        extracted_json = _extract_json_object(raw)
-        if extracted_json:
-            parsed = json.loads(extracted_json)
-            return {
-                "verdict": str(parsed.get("verdict", "incorrect")).lower(),
-                "score": float(parsed.get("score", 0.0)),
-                "rationale": str(parsed.get("rationale", "")).strip(),
-                "raw": raw,
-            }
+        parsed = safe_json_loads(raw)
+        return {
+            "verdict": str(parsed.get("verdict", "incorrect")).lower(),
+            "score": float(parsed.get("score", 0.0)),
+            "rationale": str(parsed.get("rationale", "")).strip(),
+            "raw": raw,
+        }
     except Exception as exc:
-        logging.error("Judge JSON parse failed: %s; raw=%s", exc, raw[:300])
+        logging.warning("Judge JSON parse failed: %s; falling back to heuristic parsing.", exc)
 
     parsed = _parse_non_json_judge(raw)
     parsed["raw"] = raw
@@ -197,22 +197,23 @@ class RAGEvaluator:
             return self.retriever.get_relevant_documents(query)
         raise TypeError("Retriever must support .invoke(query) or .get_relevant_documents(query)")
 
-    def evaluate_dataset(self, dataset: GroundTruthDataset) -> Dict[str, Any]:
+    def evaluate_dataset(self, dataset: EvaluationDataset) -> Dict[str, Any]:
         examples = dataset.get_all_examples()
         total = len(examples)
         judge_correct = 0
         recall_sums = {k: 0.0 for k in self.k_list}
-        per_example = []
+        per_example: List[Dict[str, Any]] = []
 
         for example in examples:
             query = example.rewritten_q
             docs = self._retrieve_docs(query)
             retrieved_ids = get_retrieved_doc_ids(docs, id_key=self.id_key)
 
-            recall_k = {}
-            for k in self.k_list:
-                recall = recall_at_k(retrieved_ids, example.gold_doc_ids, k=k)
-                recall_k[k] = recall
+            recall_scores = {
+                k: recall_at_k(retrieved_ids, example.gold_doc_ids, k)
+                for k in self.k_list
+            }
+            for k, recall in recall_scores.items():
                 recall_sums[k] += recall
 
             answer = self.answer_generator(query)
@@ -229,12 +230,12 @@ class RAGEvaluator:
             judge_correct += int(is_correct)
 
             logging.info(
-                "Q: %s\nRewritten: %s\nJudge: %s (score=%.2f)\nRecall@%s",
+                "Q: %s\nRewritten: %s\nJudge: %s (score=%.2f)\nRecall: %s",
                 example.original_q,
                 example.rewritten_q,
                 judged["verdict"],
                 judged["score"],
-                ", ".join(f"{k}={recall_k[k]:.2f}" for k in self.k_list),
+                ", ".join(f"@{k}={recall_scores[k]:.2f}" for k in self.k_list),
             )
 
             per_example.append(
@@ -243,19 +244,21 @@ class RAGEvaluator:
                     "rewritten_q": example.rewritten_q,
                     "gold_doc_ids": example.gold_doc_ids,
                     "retrieved_doc_ids": retrieved_ids,
-                    "recall_at_k": recall_k,
+                    "recall_at_k": recall_scores,
                     "answer": answer,
                     "judge": judged,
                     "is_correct": is_correct,
                 }
             )
 
-        judge_accuracy = judge_correct / total if total else 0.0
-        avg_recall = {k: (recall_sums[k] / total if total else 0.0) for k in self.k_list}
+        avg_recall = {
+            k: (recall_sums[k] / total if total else 0.0)
+            for k in self.k_list
+        }
         return {
             "total": total,
             "judge_correct": judge_correct,
-            "judge_accuracy": judge_accuracy,
+            "judge_accuracy": (judge_correct / total if total else 0.0),
             "avg_recall_at_k": avg_recall,
             "examples": per_example,
         }

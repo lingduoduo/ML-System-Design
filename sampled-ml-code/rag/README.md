@@ -20,37 +20,37 @@ The project walks through the main stages of a RAG system:
 - generate an answer
 - monitor and evaluate behavior
 
-The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/rag_system.py).
+The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py).
 
 ## Architecture
 
 ### Core modules
 
-1. [data_collection_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/data_collection_pipeline.py) builds a small in-memory document store from sample source data.
-2. [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/feature_pipeline.py) contains:
+1. [data_collection_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/data_collection_pipeline.py) builds a small in-memory document store from sample source data.
+2. [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py) contains:
    - the toy feature pipeline
    - retriever implementations for `dense`, `bm25`, and `hnsw`
    - query expansion
    - optional LangChain/FAISS feature-store builders
    - local Hugging Face embedding and LLM helpers
    - question rewriting helpers
-3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever.
-4. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/Inference_pipeline.py) contains:
+3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever.
+4. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) contains:
    - prompt construction
    - `LLMTwin`
    - LangChain RAG chain construction
    - multi-step agent planning and execution
-5. [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/monitoring.py) contains:
-   - request monitoring
+5. [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) contains:
+   - evaluation tracking
    - evaluation dataset utilities
    - judge-based evaluation helpers
    - retrieval evaluation metrics
-6. [deploy.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/deploy.py) returns simple deployment metadata.
-7. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/serving.py) exposes the FastAPI API and caches the initialized system.
+6. [deploy.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/deploy.py) returns simple deployment metadata.
+7. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py) exposes the FastAPI API and caches the initialized system.
 
 ### Startup behavior
 
-When [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/rag_system.py) builds the app state, it:
+When [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py) builds the app state, it:
 
 1. creates the sample in-memory document store
 2. builds the toy feature store and fallback model path
@@ -77,9 +77,17 @@ The inference layer supports three levels of behavior:
 
 - standard single-step answer generation
 - optional question rewriting before retrieval
-- optional multi-step planning with tools for complex queries
+- optional multi-step planning for travel-style requests with ambiguity-aware query rewriting
 
-Multi-step querying now lives in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/Inference_pipeline.py), not in a separate module.
+Multi-step querying now lives in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py), not in a separate module.
+
+In the current implementation, the multi-step agent can:
+
+- detect when the current request is ambiguous or too conversational for tool calls
+- rewrite it into a shorter, tool-friendly working query without adding new details
+- search for child-friendly attractions
+- search for nearby restaurants
+- combine tool outputs into a final answer
 
 ## Repository Layout
 
@@ -203,7 +211,7 @@ Example multi-step request:
 curl -X POST http://127.0.0.1:8000/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "query":"I want a place suitable for visiting with kids and good restaurants nearby.",
+    "query":"I want somewhere good for kids and maybe food nearby.",
     "multi_step": true
   }'
 ```
@@ -236,17 +244,17 @@ The optional richer path uses the following sequence:
 4. create a FAISS vector store
 5. expose a retriever with `k = TOP_K`
 6. load a local Hugging Face text-generation model
-7. build a rewrite chain
+7. build a question rewrite chain for retrieval
 8. build a RAG chain
-9. build a multi-step inference agent
+9. build a multi-step inference agent with ambiguity rewriting plus travel-oriented tools
 
 This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
 
 ## Monitoring And Evaluation
 
-[monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/monitoring.py) now includes:
+[monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) now includes:
 
-- runtime request logging with `Monitor`
+- runtime request logging with `EvaluationTracker`
 - evaluation examples and datasets
 - Recall@K utilities
 - judge-chain construction
@@ -260,9 +268,10 @@ Some parts are intentionally simplified:
 - the fallback document store is in memory only
 - the fallback model is still a placeholder fine-tuned model object
 - the `hnsw` retriever is an educational approximation, not a production ANN library
-- monitoring is stored only in process memory
+- evaluation history is stored only in process memory
 - deployment metadata is simulated
 - multi-step querying depends on optional LangChain and LangGraph support
+- ambiguity handling is prompt-based, so rewrite quality depends on the local LLM
 - the LangChain path still uses lightweight adapters around retrievers and models
 
 ## Recent Improvements
@@ -270,14 +279,15 @@ Some parts are intentionally simplified:
 The codebase has been refactored to be easier to extend:
 
 - removed import-time demo execution from modules
-- centralized app assembly in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/rag_system.py)
-- cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/serving.py)
+- centralized app assembly in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py)
+- cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
 - added three retrieval modes: `dense`, `bm25`, and `hnsw`
 - added query expansion
 - added question rewriting
-- moved multi-step agent behavior into [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/Inference_pipeline.py)
+- moved multi-step agent behavior into [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py)
+- added ambiguity-first query rewriting for tool-friendly multi-step planning
 - added optional LangChain, FAISS, local Hugging Face, and LangGraph integration
-- expanded [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/RAG/monitoring.py) to support evaluation workflows
+- expanded [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) to support evaluation workflows
 - kept a graceful fallback path for minimal environments
 
 ## Quick Start For Developers
