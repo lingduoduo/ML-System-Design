@@ -44,7 +44,7 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
    - `QueryUnderstandingEngine` for rewrite, HyDE, and decomposition
    - `RetrievalToolset` for domain retrieval actions
    - multi-step agent planning and execution
-5. [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) contains:
+5. [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) contains:
    - evaluation tracking
    - evaluation dataset utilities
    - judge-based evaluation helpers
@@ -249,9 +249,9 @@ The optional richer path uses the following sequence:
 
 This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
 
-## Monitoring And Evaluation
+## Evaluation
 
-[monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) now includes:
+[evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) now includes:
 
 - runtime request logging with `EvaluationTracker` and a backward-compatible `Monitor` alias
 - evaluation examples and datasets
@@ -259,6 +259,7 @@ This lets the project move beyond the toy embedder and toy vector store while al
 - judge-chain construction
 - answer judging
 - end-to-end dataset evaluation with `RAGEvaluator`
+- optional RAGAS-based evaluation with `RagasEvaluator`
 
 ## Current Limitations
 
@@ -272,6 +273,7 @@ Some parts are intentionally simplified:
 - multi-step querying depends on optional LangChain and LangGraph support
 - ambiguity handling is prompt-based, so rewrite quality depends on the local LLM
 - the LangChain path still uses lightweight adapters around retrievers and models
+- RAGAS evaluation is optional and requires extra packages plus an appropriate evaluation LLM setup
 
 ## Recent Improvements
 
@@ -292,7 +294,8 @@ The codebase has been refactored to be easier to extend:
 - clarified the three query-understanding strategies: rewrite, multi-question decomposition, and HyDE
 - refactored the inference and runtime setup around dedicated classes for query understanding, tool execution, and rich-runtime assembly
 - added optional LangChain, FAISS, local Hugging Face, and LangGraph integration
-- expanded [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) to support evaluation workflows
+- renamed the evaluation module to [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) and kept [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) as a compatibility shim
+- added an optional RAGAS-style evaluation path for answer/context quality metrics
 - kept a graceful fallback path for minimal environments
 
 ## Quick Start For Developers
