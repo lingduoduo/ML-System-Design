@@ -45,11 +45,13 @@ def _import_langchain_dependencies() -> Dict[str, Any]:
         from langchain_community.document_loaders import DirectoryLoader
         from langchain_community.embeddings import HuggingFaceEmbeddings
         from langchain_community.vectorstores import FAISS
+        from langchain_core.output_parsers import StrOutputParser
+        from langchain_core.prompts import PromptTemplate
         from langchain_text_splitters import RecursiveCharacterTextSplitter
     except ImportError as exc:
         raise ImportError(
             "LangChain dependencies are not installed. "
-            "Install `langchain-community`, `langchain-text-splitters`, "
+            "Install `langchain-community`, `langchain-core`, `langchain-text-splitters`, "
             "`faiss-cpu`, `sentence-transformers`, and `transformers` to use "
             "the FAISS/HuggingFace feature pipeline."
         ) from exc
@@ -58,7 +60,9 @@ def _import_langchain_dependencies() -> Dict[str, Any]:
         "DirectoryLoader": DirectoryLoader,
         "HuggingFaceEmbeddings": HuggingFaceEmbeddings,
         "FAISS": FAISS,
+        "PromptTemplate": PromptTemplate,
         "RecursiveCharacterTextSplitter": RecursiveCharacterTextSplitter,
+        "StrOutputParser": StrOutputParser,
     }
 
 
@@ -124,6 +128,38 @@ def build_local_hf_llm() -> Any:
         return_full_text=False,
     )
     return HuggingFacePipeline(pipeline=gen_pipeline)
+
+
+def create_rewrite_prompt() -> Any:
+    deps = _import_langchain_dependencies()
+    return deps["PromptTemplate"].from_template(
+        (
+            "Rewrite the user's question so it is clearer, more specific, and better suited "
+            "for retrieval over a knowledge base. Preserve the original intent. "
+            "Return only the rewritten question.\n\n"
+            "Question: {question}\n"
+            "Rewritten question:"
+        )
+    )
+
+
+def create_rewrite_chain(llm: Any) -> Any:
+    deps = _import_langchain_dependencies()
+    rewrite_prompt = create_rewrite_prompt()
+    return rewrite_prompt | llm | deps["StrOutputParser"]()
+
+
+def rewrite_question(rewrite_chain: Any, question: str) -> str:
+    logging.info("Rewriting question: %s", question)
+    try:
+        rewritten_question = rewrite_chain.invoke({"question": question}).strip()
+        if not rewritten_question:
+            logging.warning("Rewritten question is empty")
+            return "No valid rewritten result"
+        return rewritten_question
+    except Exception as exc:
+        logging.error("Error rewriting question: %s", str(exc))
+        return "An error occurred while rewriting the question"
 
 
 @dataclass

@@ -5,7 +5,8 @@ from functools import lru_cache
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from feature_pipeline import RetrievalMode
+from feature_pipeline import RetrievalMode, rewrite_question
+from Inference_pipeline import run_multi_step_search
 from rag_system import RAGSystem, build_rag_system
 
 
@@ -17,6 +18,8 @@ class QueryRequest(BaseModel):
     top_k: int = 2
     retrieval_mode: RetrievalMode = "dense"
     expand_query: bool = False
+    rewrite_question: bool = False
+    multi_step: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -33,25 +36,61 @@ def healthcheck() -> dict:
         "chunks": len(system.vector_db.rows),
         "deployment": system.deployment_info,
         "retrieval_modes": ["dense", "bm25", "hnsw"],
+        "multi_step_available": system.multi_step_agent is not None,
     }
 
 
 @app.post("/generate")
 def generate(req: QueryRequest) -> dict:
     system = get_system()
+    if req.multi_step:
+        if system.multi_step_agent is None:
+            return {
+                "query": req.query,
+                "rewritten_query": None,
+                "retrieval_mode": req.retrieval_mode,
+                "expand_query": req.expand_query,
+                "rewrite_question": req.rewrite_question,
+                "multi_step": True,
+                "retrieved_context": [],
+                "response": "Multi-step querying is unavailable in the current runtime.",
+            }
+
+        response = run_multi_step_search(system.multi_step_agent, req.query)
+        system.monitor.log_request(req.query, [], response)
+        return {
+            "query": req.query,
+            "rewritten_query": None,
+            "retrieval_mode": req.retrieval_mode,
+            "expand_query": req.expand_query,
+            "rewrite_question": req.rewrite_question,
+            "multi_step": True,
+            "retrieved_context": [],
+            "response": response,
+        }
+
+    retrieval_query = req.query
+    if req.rewrite_question and system.rewrite_chain is not None:
+        rewritten = rewrite_question(system.rewrite_chain, req.query)
+        if not rewritten.startswith("An error occurred") and rewritten != "No valid rewritten result":
+            retrieval_query = rewritten
+
     retrieved = system.retrieval_client.retrieve(
-        req.query,
+        retrieval_query,
         top_k=req.top_k,
         mode=req.retrieval_mode,
         expand_query=req.expand_query,
     )
-    response = system.llm_twin.answer(req.query, retrieved)
-    system.monitor.log_request(req.query, retrieved, response)
+    response = system.llm_twin.answer(retrieval_query, retrieved)
+    system.monitor.log_request(retrieval_query, retrieved, response)
 
     return {
         "query": req.query,
+        "rewritten_query": retrieval_query if retrieval_query != req.query else None,
         "retrieval_mode": req.retrieval_mode,
         "expand_query": req.expand_query,
+        "rewrite_question": req.rewrite_question,
+        "multi_step": False,
         "retrieved_context": [metadata["text"] for _, metadata in retrieved],
         "response": response,
     }
