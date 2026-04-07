@@ -39,6 +39,8 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
    - prompt construction
    - `LLMTwin`
    - LangChain RAG chain construction
+   - `RAGQueryEngine` for retrieve -> rerank -> answer
+   - `CrossEncoderReranker` for optional query-document reranking
    - `QueryUnderstandingEngine` for rewrite, HyDE, and decomposition
    - `RetrievalToolset` for domain retrieval actions
    - multi-step agent planning and execution
@@ -80,9 +82,15 @@ In the current LangChain-backed setup, hybrid retrieval is implemented with `Mul
 - runs BM25 and vector retrieval in parallel paths
 - fuses the scores with configurable weights
 - deduplicates overlapping results
-- can rerank fused candidates with the local LLM
 - respects runtime `top_k` limits from the API layer
 - keeps the strongest items and annotates metadata with retrieval provenance
+
+For standard answer generation, the richer runtime can also route queries through `RAGQueryEngine`, which:
+
+- retrieves documents from the hybrid retriever
+- optionally reranks them with the `BAAI/bge-reranker-base` cross-encoder
+- builds a bounded context window
+- generates the final answer from that context
 
 ## Inference Features
 
@@ -236,7 +244,8 @@ The optional richer path uses the following sequence:
 8. rerank the fused candidates with the local LLM
 9. build a question rewrite chain for retrieval
 10. build a RAG chain
-11. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and domain tools
+11. build a query engine for retrieve -> rerank -> answer
+12. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and domain tools
 
 This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
 
@@ -273,7 +282,7 @@ The codebase has been refactored to be easier to extend:
 - cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
 - added three retrieval modes: `dense`, `bm25`, and `hnsw`
 - added hybrid multi-path retrieval for the LangChain-backed path
-- added LLM-based reranking after hybrid retrieval fusion
+- added query-engine reranking with an optional cross-encoder stage
 - improved LangChain retrieval so API `top_k` is honored consistently
 - removed redundant embedding initialization during rich-stack startup
 - added query expansion

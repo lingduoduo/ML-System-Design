@@ -4,15 +4,24 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from Inference_pipeline import LLMTwin, GraphContext, build_agent_graph, build_rag_chain
+from Inference_pipeline import (
+    CrossEncoderReranker,
+    LLMTwin,
+    GraphContext,
+    RAGQueryEngine,
+    build_agent_graph,
+    build_rag_chain,
+)
 from data_collection_pipeline import NoSQLDB, build_document_store
 from deploy import Deployer
 from feature_pipeline import (
+    BGE_RERANKER_MODEL,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     DOCUMENT_PATH,
     FILE_PATTERN,
     TOP_K,
+    RERANK_TOP_N,
     LangChainFeatureStore,
     SimpleEmbedder,
     VectorDB,
@@ -26,7 +35,6 @@ from retriever import (
     LangChainRetrievalClient,
     MultiPathRetriever,
     RetrievalClient,
-    build_llm_reranker,
 )
 from training_pipeline import (
     ExperimentTracker,
@@ -52,6 +60,7 @@ class RAGSystem:
     rewrite_chain: Any | None = None
     rag_chain: Any | None = None
     multi_step_agent: Any | None = None
+    query_engine: Any | None = None
 
 
 @dataclass
@@ -63,6 +72,7 @@ class RichRAGRuntime:
     rewrite_chain: Any
     rag_chain: Any
     multi_step_agent: Any
+    query_engine: Any
     langchain_feature_store: LangChainFeatureStore
 
 
@@ -73,6 +83,20 @@ class RichRAGBuilder:
     chunk_size: int = CHUNK_SIZE
     chunk_overlap: int = CHUNK_OVERLAP
     top_k: int = TOP_K
+    rerank_top_n: int = RERANK_TOP_N
+    reranker_model_name: str = BGE_RERANKER_MODEL
+
+    def _build_optional_cross_encoder_reranker(self) -> Any | None:
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError:
+            logging.info("CrossEncoder reranker unavailable; proceeding without query-engine reranking.")
+            return None
+
+        logging.info("Loading BGE reranker: %s", self.reranker_model_name)
+        model = CrossEncoder(self.reranker_model_name)
+        logging.info("BGE reranker ready with top_n=%s", self.rerank_top_n)
+        return CrossEncoderReranker(model=model, default_top_n=self.rerank_top_n)
 
     def build(self) -> RichRAGRuntime:
         from langchain_community.retrievers import BM25Retriever
@@ -97,8 +121,6 @@ class RichRAGBuilder:
             vectorstore=langchain_feature_store.vector_store,
             vector_top_k=self.top_k,
             bm25_top_k=self.top_k,
-            reranker=build_llm_reranker(llm),
-            rerank_top_k=self.top_k,
         )
 
         retrieval_client = LangChainRetrievalClient(retriever=hybrid_retriever)
@@ -106,6 +128,12 @@ class RichRAGBuilder:
         rewrite_chain = create_rewrite_chain(llm)
         rag_chain = build_rag_chain(hybrid_retriever, llm)
         multi_step_agent = build_agent_graph(GraphContext(llm=llm, rag_chain=rag_chain))
+        query_engine = RAGQueryEngine(
+            retriever=hybrid_retriever,
+            llm=llm,
+            reranker=self._build_optional_cross_encoder_reranker(),
+            default_retrieve_top_k=self.top_k,
+        )
 
         return RichRAGRuntime(
             embedder=langchain_feature_store.embeddings,
@@ -115,6 +143,7 @@ class RichRAGBuilder:
             rewrite_chain=rewrite_chain,
             rag_chain=rag_chain,
             multi_step_agent=multi_step_agent,
+            query_engine=query_engine,
             langchain_feature_store=langchain_feature_store,
         )
 
@@ -144,6 +173,7 @@ def build_rag_system() -> RAGSystem:
             rewrite_chain=runtime.rewrite_chain,
             rag_chain=runtime.rag_chain,
             multi_step_agent=runtime.multi_step_agent,
+            query_engine=runtime.query_engine,
         )
     except (ImportError, FileNotFoundError, ValueError) as exc:
         logging.warning("Falling back to toy in-memory RAG pipeline: %s", exc)
@@ -170,4 +200,5 @@ def build_rag_system() -> RAGSystem:
         rewrite_chain=None,
         rag_chain=None,
         multi_step_agent=None,
+        query_engine=None,
     )

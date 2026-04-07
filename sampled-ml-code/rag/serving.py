@@ -83,6 +83,32 @@ def generate(req: QueryRequest) -> dict:
         if not rewritten.startswith("An error occurred") and rewritten != "No valid rewritten result":
             retrieval_query = rewritten
 
+    if system.query_engine is not None:
+        result = system.query_engine.run(
+            retrieval_query,
+            retrieve_top_k=req.top_k,
+            rerank_top_n=req.top_k,
+        )
+        retrieved = []
+        for index, doc in enumerate(result.documents):
+            metadata = dict(getattr(doc, "metadata", {}) or {})
+            metadata.setdefault("chunk_id", index)
+            metadata["text"] = doc.page_content
+            score = float(metadata.get("rerank_score", metadata.get("fusion_score", 1.0)))
+            retrieved.append((score, metadata))
+        response = result.answer
+        system.evaluator.record_run(retrieval_query, retrieved, response)
+        return {
+            "query": req.query,
+            "rewritten_query": retrieval_query if retrieval_query != req.query else None,
+            "retrieval_mode": req.retrieval_mode,
+            "expand_query": req.expand_query,
+            "rewrite_question": req.rewrite_question,
+            "multi_step": False,
+            "retrieved_context": [doc.page_content for doc in result.documents],
+            "response": response,
+        }
+
     retrieved = system.retrieval_client.retrieve(
         retrieval_query,
         top_k=req.top_k,

@@ -64,6 +64,101 @@ def _format_docs(docs: List[Any]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
+@dataclass
+class QueryEngineResult:
+    answer: str
+    documents: List[Any]
+    context: str
+
+
+@dataclass
+class CrossEncoderReranker:
+    model: Any
+    default_top_n: int = 3
+
+    def rerank(self, query: str, docs: List[Any], top_n: int | None = None) -> List[Any]:
+        if not docs:
+            return []
+
+        pairs = [(query, doc.page_content or "") for doc in docs]
+        scores = self.model.predict(pairs)
+        scored_docs: List[Tuple[Any, float]] = []
+        for doc, score in zip(docs, scores):
+            metadata = dict(getattr(doc, "metadata", {}) or {})
+            metadata["rerank_score"] = float(score)
+            scored_docs.append((type(doc)(page_content=doc.page_content, metadata=metadata), float(score)))
+
+        scored_docs.sort(key=lambda item: item[1], reverse=True)
+        limit = top_n if top_n is not None else self.default_top_n
+        return [doc for doc, _ in scored_docs[:limit]]
+
+
+def build_context(docs: List[Any], max_chars: int = 6000) -> str:
+    blocks: List[str] = []
+    total = 0
+    for index, doc in enumerate(docs, start=1):
+        text = (getattr(doc, "page_content", "") or "").strip()
+        if not text:
+            continue
+        block = f"[Doc {index}]\n{text}\n"
+        if total + len(block) > max_chars:
+            break
+        blocks.append(block)
+        total += len(block)
+    return "\n".join(blocks)
+
+
+@dataclass
+class RAGQueryEngine:
+    retriever: Any
+    llm: Any
+    reranker: Any | None = None
+    default_retrieve_top_k: int = 5
+    max_context_chars: int = 6000
+
+    def _configure_top_k(self, top_k: int) -> None:
+        if top_k <= 0:
+            return
+        for attr in ("k", "vector_top_k", "bm25_top_k", "runtime_top_k"):
+            if hasattr(self.retriever, attr):
+                try:
+                    setattr(self.retriever, attr, top_k)
+                except Exception:
+                    pass
+
+    def _generate_answer(self, query: str, context: str) -> str:
+        prompt = (
+            "You are a precise assistant. Answer using ONLY the provided context.\n"
+            "If the answer is not in the context, say you don't know.\n\n"
+            f"Question:\n{query}\n\n"
+            f"Context:\n{context}\n\n"
+            "Answer:"
+        )
+        if hasattr(self.llm, "invoke"):
+            result = self.llm.invoke(prompt)
+            return result.content if hasattr(result, "content") else str(result)
+        if hasattr(self.llm, "generate"):
+            return self.llm.generate(prompt)
+        raise TypeError("Query engine LLM must implement either `invoke` or `generate`.")
+
+    def run(
+        self,
+        query: str,
+        retrieve_top_k: int | None = None,
+        rerank_top_n: int | None = None,
+    ) -> QueryEngineResult:
+        top_k = retrieve_top_k if retrieve_top_k is not None else self.default_retrieve_top_k
+        self._configure_top_k(top_k)
+        docs = self.retriever.invoke(query)
+        if top_k > 0:
+            docs = docs[:top_k]
+        if self.reranker is not None:
+            docs = self.reranker.rerank(query, docs, top_n=rerank_top_n or top_k)
+        context = build_context(docs, max_chars=self.max_context_chars)
+        answer = self._generate_answer(query, context)
+        return QueryEngineResult(answer=answer, documents=docs, context=context)
+
+
 def build_rag_chain(retriever: Any, llm: Any) -> Any:
     deps = _import_agent_dependencies()
     prompt = deps["ChatPromptTemplate"].from_messages(
