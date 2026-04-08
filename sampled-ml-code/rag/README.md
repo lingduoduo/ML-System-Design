@@ -111,6 +111,15 @@ In the current implementation, the multi-step agent can:
 - run domain-specific retrieval tools
 - combine tool outputs into a final answer
 
+The prompt layer in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) also supports:
+
+- few-shot prompt examples
+- XML-organized prompt sections
+- JSON or XML response schema instructions
+- request metadata and external data injection
+- short-term session memory for follow-up questions
+- internal step-by-step reasoning guidance without exposing chain-of-thought
+
 ### Optional LangChain + FAISS + local HF setup
 
 Install these if you want the richer local retrieval and inference stack:

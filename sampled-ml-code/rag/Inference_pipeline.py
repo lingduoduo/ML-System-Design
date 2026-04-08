@@ -14,27 +14,258 @@ logging.basicConfig(
 )
 
 
-def build_prompt(query: str, retrieved_chunks: List[Tuple[float, Dict]]) -> str:
-    context = "\n".join(metadata["text"] for _, metadata in retrieved_chunks)
+@dataclass(frozen=True)
+class PromptExample:
+    input_text: str
+    output_text: str
+
+
+@dataclass(frozen=True)
+class MemoryTurn:
+    user_query: str
+    answer: str
+
+
+@dataclass
+class PromptOptimizationConfig:
+    system_role: str = "You are a precise retrieval-grounded assistant."
+    response_format: str = "json"
+    max_memory_turns: int = 3
+    use_few_shot: bool = True
+    include_metadata: bool = True
+    include_external_data: bool = True
+    few_shot_examples: List[PromptExample] = field(
+        default_factory=lambda: [
+            PromptExample(
+                input_text="Question: What is retrieval-augmented generation?\nContext: RAG combines retrieval with generation.",
+                output_text=json.dumps(
+                    {
+                        "answer": "Retrieval-augmented generation combines retrieving relevant information with text generation.",
+                        "grounded": True,
+                        "confidence": "high",
+                    },
+                    ensure_ascii=True,
+                ),
+            ),
+            PromptExample(
+                input_text="Question: What is the refund policy?\nContext: The provided context does not mention refunds.",
+                output_text=json.dumps(
+                    {
+                        "answer": "I don't know based on the provided context.",
+                        "grounded": False,
+                        "confidence": "low",
+                    },
+                    ensure_ascii=True,
+                ),
+            ),
+        ]
+    )
+
+
+@dataclass
+class PromptMemory:
+    max_turns: int = 3
+    sessions: Dict[str, List[MemoryTurn]] = field(default_factory=dict)
+
+    def get(self, session_id: str | None = None) -> List[MemoryTurn]:
+        if not session_id:
+            return []
+        return list(self.sessions.get(session_id, []))[-self.max_turns :]
+
+    def append(self, user_query: str, answer: str, session_id: str | None = None) -> None:
+        if not session_id:
+            return
+        turns = self.sessions.setdefault(session_id, [])
+        turns.append(MemoryTurn(user_query=user_query, answer=answer))
+        if len(turns) > self.max_turns:
+            self.sessions[session_id] = turns[-self.max_turns :]
+
+
+def _xml_escape(value: Any) -> str:
+    text = "" if value is None else str(value)
     return (
-        "You are a helpful assistant.\n\n"
-        f"Question:\n{query}\n\n"
-        f"Context:\n{context}\n\n"
-        "Answer:\n"
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _to_xml_block(tag: str, value: Any, indent: str = "") -> str:
+    if isinstance(value, dict):
+        inner = "\n".join(_to_xml_block(key, item, indent + "  ") for key, item in value.items())
+        return f"{indent}<{tag}>\n{inner}\n{indent}</{tag}>"
+    if isinstance(value, list):
+        inner = "\n".join(_to_xml_block("item", item, indent + "  ") for item in value)
+        return f"{indent}<{tag}>\n{inner}\n{indent}</{tag}>"
+    return f"{indent}<{tag}>{_xml_escape(value)}</{tag}>"
+
+
+def _normalize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if value is None or key == "text":
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            normalized[key] = value
+        else:
+            normalized[key] = str(value)
+    return normalized
+
+
+def _format_memory_xml(memory_turns: List[MemoryTurn]) -> str:
+    if not memory_turns:
+        return "<memory />"
+    items = [
+        {"turn_id": index, "user_query": turn.user_query, "assistant_answer": turn.answer}
+        for index, turn in enumerate(memory_turns, start=1)
+    ]
+    return _to_xml_block("memory", items)
+
+
+def _format_few_shot_examples(examples: List[PromptExample], response_format: str) -> str:
+    if not examples:
+        return "<few_shot_examples />"
+    rendered: List[str] = []
+    for index, example in enumerate(examples, start=1):
+        rendered.append(
+            _to_xml_block(
+                "example",
+                {
+                    "id": index,
+                    "input": example.input_text,
+                    "ideal_output": example.output_text,
+                    "output_format": response_format,
+                },
+            )
+        )
+    return "<few_shot_examples>\n" + "\n".join(rendered) + "\n</few_shot_examples>"
+
+
+def _build_structured_response_instruction(response_format: str) -> str:
+    if response_format.lower() == "xml":
+        return (
+            "Return XML with this structure only:\n"
+            "<response><answer>...</answer><grounded>true|false</grounded>"
+            "<confidence>high|medium|low</confidence><citations><item>Doc ids or metadata</item></citations></response>"
+        )
+    return (
+        'Return JSON only with keys: "answer", "grounded", "confidence", "citations". '
+        '"citations" must be a list of doc ids or short metadata references.'
+    )
+
+
+def _build_prompt_body(
+    query: str,
+    context: str,
+    *,
+    prompt_config: PromptOptimizationConfig,
+    metadata: Dict[str, Any] | None = None,
+    external_data: Dict[str, Any] | None = None,
+    memory_turns: List[MemoryTurn] | None = None,
+) -> str:
+    memory_xml = _format_memory_xml(memory_turns or [])
+    metadata_xml = _to_xml_block("request_metadata", metadata or {})
+    external_xml = _to_xml_block("external_data", external_data or {})
+    examples_xml = (
+        _format_few_shot_examples(prompt_config.few_shot_examples, prompt_config.response_format)
+        if prompt_config.use_few_shot
+        else "<few_shot_examples />"
+    )
+    return (
+        f"{prompt_config.system_role}\n"
+        "Reason through the task internally before answering, but do not reveal hidden reasoning.\n"
+        "Ground every claim in the supplied context or metadata.\n"
+        "If the context is insufficient, say so clearly.\n"
+        f"{_build_structured_response_instruction(prompt_config.response_format)}\n\n"
+        "<task>\n"
+        "Use retrieved evidence, optional external data, and short-term memory to answer the user query.\n"
+        "</task>\n"
+        f"{examples_xml}\n"
+        f"{memory_xml}\n"
+        f"{metadata_xml}\n"
+        f"{external_xml}\n"
+        f"{_to_xml_block('query', query)}\n"
+        f"{_to_xml_block('retrieved_context', context)}\n"
+        "<quality_checks>\n"
+        "  <item>Prefer grounded answers over fluent guesses.</item>\n"
+        "  <item>Use citations when possible.</item>\n"
+        "  <item>Keep the final answer concise and directly useful.</item>\n"
+        "</quality_checks>\n"
+    )
+
+
+def build_prompt(
+    query: str,
+    retrieved_chunks: List[Tuple[float, Dict]],
+    *,
+    prompt_config: PromptOptimizationConfig | None = None,
+    request_metadata: Dict[str, Any] | None = None,
+    external_data: Dict[str, Any] | None = None,
+    memory_turns: List[MemoryTurn] | None = None,
+) -> str:
+    prompt_config = prompt_config or PromptOptimizationConfig()
+    context_lines: List[str] = []
+    chunk_metadata: Dict[str, Any] = {}
+    for index, (score, metadata) in enumerate(retrieved_chunks, start=1):
+        text = str(metadata.get("text", "")).strip()
+        if not text:
+            continue
+        doc_ref = metadata.get("id") or metadata.get("source") or f"chunk_{index}"
+        context_lines.append(f"[Doc {index} | ref={doc_ref} | score={score:.4f}]\n{text}")
+        if prompt_config.include_metadata:
+            chunk_metadata[f"doc_{index}"] = _normalize_metadata(metadata)
+
+    merged_metadata = dict(request_metadata or {})
+    if prompt_config.include_metadata and chunk_metadata:
+        merged_metadata["retrieved_chunk_metadata"] = chunk_metadata
+
+    return _build_prompt_body(
+        query=query,
+        context="\n\n".join(context_lines),
+        prompt_config=prompt_config,
+        metadata=merged_metadata if merged_metadata else None,
+        external_data=external_data if prompt_config.include_external_data else None,
+        memory_turns=memory_turns,
     )
 
 
 @dataclass
 class LLMTwin:
     model: Any
+    prompt_config: PromptOptimizationConfig = field(default_factory=PromptOptimizationConfig)
+    memory: PromptMemory = field(default_factory=PromptMemory)
 
-    def answer(self, query: str, retrieved_chunks: List[Tuple[float, Dict]]) -> str:
-        prompt = build_prompt(query, retrieved_chunks)
+    def __post_init__(self) -> None:
+        self.memory.max_turns = self.prompt_config.max_memory_turns
+
+    def answer(
+        self,
+        query: str,
+        retrieved_chunks: List[Tuple[float, Dict]],
+        *,
+        session_id: str | None = None,
+        request_metadata: Dict[str, Any] | None = None,
+        external_data: Dict[str, Any] | None = None,
+    ) -> str:
+        prompt = build_prompt(
+            query,
+            retrieved_chunks,
+            prompt_config=self.prompt_config,
+            request_metadata=request_metadata,
+            external_data=external_data,
+            memory_turns=self.memory.get(session_id),
+        )
         if hasattr(self.model, "generate"):
-            return self.model.generate(prompt)
-        if hasattr(self.model, "invoke"):
-            return self.model.invoke(prompt)
-        raise TypeError("LLMTwin model must implement either `generate` or `invoke`.")
+            result = self.model.generate(prompt)
+        elif hasattr(self.model, "invoke"):
+            result = self.model.invoke(prompt)
+        else:
+            raise TypeError("LLMTwin model must implement either `generate` or `invoke`.")
+        result_text = result.content if hasattr(result, "content") else str(result)
+        self.memory.append(query, result_text, session_id=session_id)
+        return result_text
 
 
 @lru_cache(maxsize=1)
@@ -71,6 +302,7 @@ class QueryEngineResult:
     answer: str
     documents: List[Any]
     context: str
+    prompt: str = ""
 
 
 @dataclass
@@ -102,7 +334,13 @@ def build_context(docs: List[Any], max_chars: int = 6000) -> str:
         text = (getattr(doc, "page_content", "") or "").strip()
         if not text:
             continue
-        block = f"[Doc {index}]\n{text}\n"
+        metadata = _normalize_metadata(dict(getattr(doc, "metadata", {}) or {}))
+        metadata_summary = (
+            ", ".join(f"{key}={value}" for key, value in metadata.items())
+            if metadata
+            else "no_metadata"
+        )
+        block = f"[Doc {index} | {metadata_summary}]\n{text}\n"
         if total + len(block) > max_chars:
             break
         blocks.append(block)
@@ -117,6 +355,11 @@ class RAGQueryEngine:
     reranker: Any | None = None
     default_retrieve_top_k: int = 5
     max_context_chars: int = 6000
+    prompt_config: PromptOptimizationConfig = field(default_factory=PromptOptimizationConfig)
+    memory: PromptMemory = field(default_factory=PromptMemory)
+
+    def __post_init__(self) -> None:
+        self.memory.max_turns = self.prompt_config.max_memory_turns
 
     def _configure_top_k(self, top_k: int) -> None:
         if top_k <= 0:
@@ -128,19 +371,28 @@ class RAGQueryEngine:
                 except Exception:
                     pass
 
-    def _generate_answer(self, query: str, context: str) -> str:
-        prompt = (
-            "You are a precise assistant. Answer using ONLY the provided context.\n"
-            "If the answer is not in the context, say you don't know.\n\n"
-            f"Question:\n{query}\n\n"
-            f"Context:\n{context}\n\n"
-            "Answer:"
+    def _generate_answer(
+        self,
+        query: str,
+        context: str,
+        *,
+        request_metadata: Dict[str, Any] | None = None,
+        external_data: Dict[str, Any] | None = None,
+        memory_turns: List[MemoryTurn] | None = None,
+    ) -> Tuple[str, str]:
+        prompt = _build_prompt_body(
+            query=query,
+            context=context,
+            prompt_config=self.prompt_config,
+            metadata=request_metadata if self.prompt_config.include_metadata else None,
+            external_data=external_data if self.prompt_config.include_external_data else None,
+            memory_turns=memory_turns,
         )
         if hasattr(self.llm, "invoke"):
             result = self.llm.invoke(prompt)
-            return result.content if hasattr(result, "content") else str(result)
+            return (result.content if hasattr(result, "content") else str(result), prompt)
         if hasattr(self.llm, "generate"):
-            return self.llm.generate(prompt)
+            return (self.llm.generate(prompt), prompt)
         raise TypeError("Query engine LLM must implement either `invoke` or `generate`.")
 
     def run(
@@ -148,6 +400,10 @@ class RAGQueryEngine:
         query: str,
         retrieve_top_k: int | None = None,
         rerank_top_n: int | None = None,
+        *,
+        session_id: str | None = None,
+        request_metadata: Dict[str, Any] | None = None,
+        external_data: Dict[str, Any] | None = None,
     ) -> QueryEngineResult:
         top_k = retrieve_top_k if retrieve_top_k is not None else self.default_retrieve_top_k
         self._configure_top_k(top_k)
@@ -157,8 +413,21 @@ class RAGQueryEngine:
         if self.reranker is not None:
             docs = self.reranker.rerank(query, docs, top_n=rerank_top_n or top_k)
         context = build_context(docs, max_chars=self.max_context_chars)
-        answer = self._generate_answer(query, context)
-        return QueryEngineResult(answer=answer, documents=docs, context=context)
+        merged_metadata = dict(request_metadata or {})
+        if self.prompt_config.include_metadata and docs:
+            merged_metadata["document_metadata"] = {
+                f"doc_{index}": _normalize_metadata(dict(getattr(doc, "metadata", {}) or {}))
+                for index, doc in enumerate(docs, start=1)
+            }
+        answer, prompt = self._generate_answer(
+            query,
+            context,
+            request_metadata=merged_metadata if merged_metadata else None,
+            external_data=external_data,
+            memory_turns=self.memory.get(session_id),
+        )
+        self.memory.append(query, answer, session_id=session_id)
+        return QueryEngineResult(answer=answer, documents=docs, context=context, prompt=prompt)
 
 
 def build_rag_chain(retriever: Any, llm: Any) -> Any:
@@ -167,12 +436,21 @@ def build_rag_chain(retriever: Any, llm: Any) -> Any:
         [
             (
                 "system",
-                "You answer questions using the provided context. "
-                "If the context is insufficient, say so clearly.",
+                "You answer questions using the provided context.\n"
+                "Reason internally, but do not reveal hidden reasoning.\n"
+                "Cite the document ids when possible.\n"
+                "If the context is insufficient, say so clearly.\n"
+                'Return JSON only with keys: "answer", "grounded", "confidence", "citations".',
             ),
             (
                 "human",
-                "Question:\n{question}\n\nContext:\n{context}\n\nAnswer:",
+                "<examples>\n"
+                "<example><question>What is RAG?</question><context>[Doc 1] RAG combines retrieval and generation.</context>"
+                '<ideal>{"answer":"RAG combines retrieval with generation.","grounded":true,"confidence":"high","citations":["Doc 1"]}</ideal></example>\n'
+                "</examples>\n"
+                "<query>{question}</query>\n"
+                "<retrieved_context>{context}</retrieved_context>\n"
+                "<instruction>Answer using only the retrieved context.</instruction>",
             ),
         ]
     )
@@ -243,8 +521,31 @@ class QueryUnderstandingEngine:
         result = chain.invoke(variables)
         return result.strip() if isinstance(result, str) else str(result).strip()
 
+    def _few_shot_block(self, examples: List[Tuple[str, str]]) -> str:
+        blocks = []
+        for index, (example_input, example_output) in enumerate(examples, start=1):
+            blocks.append(
+                _to_xml_block(
+                    "example",
+                    {
+                        "id": index,
+                        "input": example_input,
+                        "output": example_output,
+                    },
+                )
+            )
+        return "<few_shot_examples>\n" + "\n".join(blocks) + "\n</few_shot_examples>"
+
     def generate_hyde_context(self, query: str) -> str:
         deps = _import_agent_dependencies()
+        examples = self._few_shot_block(
+            [
+                (
+                    "Need a nice place for kids and somewhere to eat after.",
+                    "The user likely wants family-friendly attractions suitable for children and nearby dining options for a follow-up meal.",
+                ),
+            ]
+        )
         prompt = deps["ChatPromptTemplate"].from_messages(
             [
                 (
@@ -258,13 +559,21 @@ class QueryUnderstandingEngine:
                     "- Focus on the type of place, companion type, and nearby needs if implied.\n"
                     "- Return only the hypothetical note.",
                 ),
-                ("human", "Original query:\n{query}"),
+                ("human", f"{examples}\n<original_query>{{query}}</original_query>"),
             ]
         )
         return self._invoke_text_model(prompt, {"query": query})
 
     def decompose_query(self, query: str) -> str:
         deps = _import_agent_dependencies()
+        examples = self._few_shot_block(
+            [
+                (
+                    "Plan a kid-friendly day and also find lunch nearby.",
+                    "Find child-friendly attractions for a daytime visit.\nFind lunch options near the likely attraction area.",
+                ),
+            ]
+        )
         prompt = deps["ChatPromptTemplate"].from_messages(
             [
                 (
@@ -277,7 +586,7 @@ class QueryUnderstandingEngine:
                     "- Do not add unsupported details.\n"
                     "- Return only the subquestions, one per line.",
                 ),
-                ("human", "Original query:\n{query}"),
+                ("human", f"{examples}\n<original_query>{{query}}</original_query>"),
             ]
         )
         return self._invoke_text_model(prompt, {"query": query})
@@ -285,6 +594,14 @@ class QueryUnderstandingEngine:
     def rewrite_ambiguous_query(self, query: str) -> str:
         deps = _import_agent_dependencies()
         hyde_context = self.generate_hyde_context(query)
+        examples = self._few_shot_block(
+            [
+                (
+                    "Somewhere fun for kids and food too.",
+                    "child-friendly attractions with nearby restaurants",
+                ),
+            ]
+        )
         prompt = deps["ChatPromptTemplate"].from_messages(
             [
                 (
@@ -300,7 +617,7 @@ class QueryUnderstandingEngine:
                 ),
                 (
                     "human",
-                    "Original query:\n{query}\n\nHypothetical note:\n{hyde_context}",
+                    f"{examples}\n<original_query>{{query}}</original_query>\n<hypothetical_note>{{hyde_context}}</hypothetical_note>",
                 ),
             ]
         )
@@ -361,6 +678,7 @@ def create_planner_prompt() -> Any:
                 "- The rewrite must stay concise and must not become more detailed than the original request.\n"
                 "- Prefer short, tool-friendly queries that are easy for MCP-style function calls to consume.\n"
                 "- Output ONLY a JSON object (no markdown, no extra text).\n"
+                "- Think step-by-step internally, but only output the final JSON action.\n"
                 "- If you need a tool, output:\n"
                 '  {"action": "tool", "tool_name": "RewriteAmbiguousQuery", "tool_input": "..."}\n'
                 "  OR\n"
@@ -371,11 +689,19 @@ def create_planner_prompt() -> Any:
                 '  {"action": "tool", "tool_name": "SearchNearbyRestaurants", "tool_input": "..."}\n'
                 "- If you are ready to answer, output:\n"
                 '  {"action": "final", "answer": "..."}\n'
-                "- Use the latest rewritten query if one exists.",
+                "- Use the latest rewritten query if one exists.\n"
+                "Few-shot examples:\n"
+                '{"action":"tool","tool_name":"RewriteAmbiguousQuery","tool_input":"somewhere fun for kids and food too"}\n'
+                '{"action":"tool","tool_name":"SearchChildFriendlyAttractions","tool_input":"child-friendly attractions with nearby restaurants"}\n'
+                '{"action":"final","answer":"Here are a few family-friendly options, followed by nearby food suggestions."}',
             ),
             (
                 "human",
-                "User request:\n{user_query}\n\nCurrent working query:\n{active_query}\n\nScratchpad so far:\n{scratchpad}\n",
+                "<planner_state>\n"
+                "<user_request>{user_query}</user_request>\n"
+                "<active_query>{active_query}</active_query>\n"
+                "<scratchpad>{scratchpad}</scratchpad>\n"
+                "</planner_state>\n",
             ),
         ]
     )
