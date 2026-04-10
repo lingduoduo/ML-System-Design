@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, Dict, List
 
 from feature_pipeline import rewrite_question
@@ -29,6 +30,7 @@ class GatewayEngine:
 @dataclass
 class GatewayExecutionResult:
     engine: GatewayEngine
+    selected_model: str
     query: str
     response: str
     retrieved_context: List[str]
@@ -47,7 +49,8 @@ class LLMGateway:
         for engine_name in ("fast", "balanced", "premium"):
             self.engine_counts.setdefault(engine_name, 0)
 
-    def available_engines(self) -> Dict[str, GatewayEngine]:
+    @cached_property
+    def engines(self) -> Dict[str, GatewayEngine]:
         return {
             "fast": GatewayEngine(
                 name="fast",
@@ -68,24 +71,22 @@ class LLMGateway:
 
     def select_engine(self, query: str) -> GatewayEngine:
         content = query.lower()
-        engines = self.available_engines()
 
         if any(word in content for word in COMPLEX_WORDS) or len(query) > 120:
-            return engines["premium"]
+            return self.engines["premium"]
         if any(word in content for word in MEDIUM_WORDS) or len(query) > 40:
-            return engines["balanced"]
+            return self.engines["balanced"]
         if any(word in content for word in SIMPLE_WORDS):
-            return engines["fast"]
-        return engines["balanced"]
+            return self.engines["fast"]
+        return self.engines["balanced"]
 
     def resolve_engine(self, requested_model: str, query: str) -> GatewayEngine:
         normalized = requested_model.strip().lower()
-        engines = self.available_engines()
 
         if normalized in ("", "auto"):
             return self.select_engine(query)
-        if normalized in engines:
-            return engines[normalized]
+        if normalized in self.engines:
+            return self.engines[normalized]
         raise ValueError(
             "Unsupported model selection. Use 'auto', 'fast', 'balanced', or 'premium'."
         )
@@ -106,6 +107,20 @@ class LLMGateway:
                 return value
         return type(model).__name__ or fallback
 
+    def _build_request_metadata(
+        self,
+        engine: GatewayEngine,
+        *,
+        selected_model: str,
+        used_rewrite: bool,
+    ) -> Dict[str, Any]:
+        return {
+            "gateway_engine": engine.name,
+            "gateway_tier": engine.tier,
+            "gateway_model": selected_model,
+            "used_rewrite": used_rewrite,
+        }
+
     def execute(
         self,
         *,
@@ -117,6 +132,7 @@ class LLMGateway:
         requested_model: str = "auto",
     ) -> GatewayExecutionResult:
         engine = self.resolve_engine(requested_model, query)
+        selected_model = self.resolve_model_label(engine)
         rewritten_query = query
         used_rewrite = False
 
@@ -130,6 +146,7 @@ class LLMGateway:
             response = self._run_multi_step(rewritten_query)
             result = GatewayExecutionResult(
                 engine=engine,
+                selected_model=selected_model,
                 query=rewritten_query,
                 response=response,
                 retrieved_context=[],
@@ -145,6 +162,7 @@ class LLMGateway:
                 rewritten_query,
                 top_k=top_k,
                 engine=engine,
+                selected_model=selected_model,
                 used_rewrite=used_rewrite,
             )
             self._record(engine.name)
@@ -156,6 +174,7 @@ class LLMGateway:
             retrieval_mode=retrieval_mode,
             expand_query=expand_query,
             engine=engine,
+            selected_model=selected_model,
             used_rewrite=used_rewrite,
         )
         self._record(engine.name)
@@ -172,22 +191,23 @@ class LLMGateway:
         *,
         top_k: int,
         engine: GatewayEngine,
+        selected_model: str,
         used_rewrite: bool,
     ) -> GatewayExecutionResult:
         result = self.system.query_engine.run(
             query,
             retrieve_top_k=top_k,
             rerank_top_n=top_k,
-            request_metadata={
-                "gateway_engine": engine.name,
-                "gateway_tier": engine.tier,
-                "gateway_model": self.resolve_model_label(engine),
-                "used_rewrite": used_rewrite,
-            },
+            request_metadata=self._build_request_metadata(
+                engine,
+                selected_model=selected_model,
+                used_rewrite=used_rewrite,
+            ),
         )
         retrieved = documents_to_retrieval_results(result.documents, top_k=top_k)
         return GatewayExecutionResult(
             engine=engine,
+            selected_model=selected_model,
             query=query,
             response=result.answer,
             retrieved_context=[doc.page_content for doc in result.documents],
@@ -204,6 +224,7 @@ class LLMGateway:
         retrieval_mode: str,
         expand_query: bool,
         engine: GatewayEngine,
+        selected_model: str,
         used_rewrite: bool,
     ) -> GatewayExecutionResult:
         retrieved = self.system.retrieval_client.retrieve(
@@ -215,15 +236,15 @@ class LLMGateway:
         response = self.system.llm_twin.answer(
             query,
             retrieved,
-            request_metadata={
-                "gateway_engine": engine.name,
-                "gateway_tier": engine.tier,
-                "gateway_model": self.resolve_model_label(engine),
-                "used_rewrite": used_rewrite,
-            },
+            request_metadata=self._build_request_metadata(
+                engine,
+                selected_model=selected_model,
+                used_rewrite=used_rewrite,
+            ),
         )
         return GatewayExecutionResult(
             engine=engine,
+            selected_model=selected_model,
             query=query,
             response=response,
             retrieved_context=[metadata["text"] for _, metadata in retrieved],
@@ -238,7 +259,7 @@ class LLMGateway:
 
     def stats(self) -> Dict[str, Any]:
         return {
-            "engine_types": list(self.available_engines().keys()),
+            "engine_types": list(self.engines.keys()),
             "request_count": self.request_count,
             "engine_counts": dict(self.engine_counts),
             "query_engine_available": self.system.query_engine is not None,

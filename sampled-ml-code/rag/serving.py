@@ -114,7 +114,7 @@ def generate(req: QueryRequest) -> dict:
         response=result.response,
         retrieved_context=result.retrieved_context,
         multi_step=result.used_multi_step,
-        selected_model=gateway.resolve_model_label(result.engine),
+        selected_model=result.selected_model,
         selected_engine=result.engine.name,
         selected_tier=result.engine.tier,
     )
