@@ -140,14 +140,18 @@ def _import_chunking_experiment_dependencies() -> Dict[str, Any]:
 @dataclass
 class EvaluationTracker:
     history: List[Dict[str, Any]] = field(default_factory=list)
+    max_history_events: int = 500
+    response_preview_chars: int = 200
 
     def record_run(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:
         event = {
             "query": query,
             "retrieved_chunks": [metadata.get("text", "") for _, metadata in retrieved],
-            "response_preview": response[:200],
+            "response_preview": response[: self.response_preview_chars],
         }
         self.history.append(event)
+        if len(self.history) > self.max_history_events:
+            del self.history[: len(self.history) - self.max_history_events]
         return event
 
     def log_request(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:

@@ -3,11 +3,12 @@ from __future__ import annotations
 from functools import lru_cache
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from feature_pipeline import RetrievalMode, rewrite_question
 from Inference_pipeline import run_multi_step_search
 from rag_system import RAGSystem, build_rag_system
+from retriever import documents_to_retrieval_results
 
 
 app = FastAPI()
@@ -43,7 +44,7 @@ def _build_response_payload(
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = 2
+    top_k: int = Field(default=2, ge=1, le=20)
     retrieval_mode: RetrievalMode = "dense"
     expand_query: bool = False
     rewrite_question: bool = False
@@ -103,13 +104,7 @@ def generate(req: QueryRequest) -> dict:
             retrieve_top_k=req.top_k,
             rerank_top_n=req.top_k,
         )
-        retrieved = []
-        for index, doc in enumerate(result.documents):
-            metadata = dict(getattr(doc, "metadata", {}) or {})
-            metadata.setdefault("chunk_id", index)
-            metadata["text"] = doc.page_content
-            score = float(metadata.get("rerank_score", metadata.get("fusion_score", 1.0)))
-            retrieved.append((score, metadata))
+        retrieved = documents_to_retrieval_results(result.documents, top_k=req.top_k)
         response = result.answer
         system.evaluator.record_run(retrieval_query, retrieved, response)
         return _build_response_payload(

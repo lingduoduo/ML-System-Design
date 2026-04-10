@@ -37,6 +37,8 @@ The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Desi
 3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever, plus a hybrid `MultiPathRetriever` that fuses lexical and vector search.
 4. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) contains:
    - prompt construction
+   - static and dynamic context-template selection
+   - relevant historical Q/A reuse for follow-up questions
    - `LLMTwin`
    - LangChain RAG chain construction
    - `RAGQueryEngine` for retrieve -> rerank -> answer
@@ -85,6 +87,8 @@ In the current LangChain-backed setup, hybrid retrieval is implemented with `Mul
 - respects runtime `top_k` limits from the API layer
 - keeps the strongest items and annotates metadata with retrieval provenance
 
+The retrieval helpers also normalize LangChain document outputs into a shared `(score, metadata)` shape so the serving, evaluation, and prompt layers can reuse the same result format.
+
 For standard answer generation, the richer runtime can also route queries through `RAGQueryEngine`, which:
 
 - retrieves documents from the hybrid retriever
@@ -116,9 +120,18 @@ The prompt layer in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Desig
 - few-shot prompt examples
 - XML-organized prompt sections
 - JSON or XML response schema instructions
+- static or dynamic context templates for different task types
 - request metadata and external data injection
 - short-term session memory for follow-up questions
+- relevant-history extraction from prior question/answer turns
 - internal step-by-step reasoning guidance without exposing chain-of-thought
+
+The current prompt flow is designed to:
+
+- select a generic, customer-feedback, or technical-summary template based on the current query, or accept a preferred template from config
+- keep the full short-term memory window
+- separately surface only the most relevant historical question/answer pairs for the current turn
+- use historical answers only when they remain consistent with retrieved evidence
 
 ### Optional LangChain + FAISS + local HF setup
 
@@ -189,7 +202,7 @@ Request body:
 Request fields:
 
 - `query`: user query
-- `top_k`: number of chunks to retrieve
+- `top_k`: number of chunks to retrieve, validated in the API layer and currently limited to `1..20`
 - `retrieval_mode`: one of `dense`, `bm25`, or `hnsw`
 - `expand_query`: whether to run synonym-based query expansion
 - `rewrite_question`: whether to rewrite the query before retrieval
@@ -263,6 +276,7 @@ This lets the project move beyond the toy embedder and toy vector store while al
 [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) now includes:
 
 - runtime request logging with `EvaluationTracker` and a backward-compatible `Monitor` alias
+- bounded in-memory evaluation history to avoid unbounded growth in long-running sessions
 - evaluation examples and datasets
 - Recall@K utilities
 - judge-chain construction
@@ -278,6 +292,7 @@ Some parts are intentionally simplified:
 
 - the fallback document store is in memory only
 - the fallback model is still a placeholder fine-tuned model object
+- the dynamic context-template selector currently uses lightweight keyword matching rather than a learned classifier
 - the `hnsw` retriever is an educational approximation, not a production ANN library
 - evaluation history is stored only in process memory
 - deployment metadata is simulated

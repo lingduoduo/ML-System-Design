@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
+from retriever import configure_runtime_top_k
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,14 +28,24 @@ class MemoryTurn:
     answer: str
 
 
+@dataclass(frozen=True)
+class ContextTemplate:
+    name: str
+    instruction: str
+    keywords: Tuple[str, ...] = ()
+
+
 @dataclass
 class PromptOptimizationConfig:
     system_role: str = "You are a precise retrieval-grounded assistant."
     response_format: str = "json"
     max_memory_turns: int = 3
+    max_relevant_history_turns: int = 2
     use_few_shot: bool = True
     include_metadata: bool = True
     include_external_data: bool = True
+    enable_context_templates: bool = True
+    preferred_template: str | None = None
     few_shot_examples: List[PromptExample] = field(
         default_factory=lambda: [
             PromptExample(
@@ -60,6 +72,90 @@ class PromptOptimizationConfig:
             ),
         ]
     )
+
+
+class ContextTemplateFactory:
+    @staticmethod
+    def default() -> ContextTemplate:
+        return ContextTemplate(
+            name="Generic QA",
+            instruction=(
+                "Answer the current question with a concise, grounded response. "
+                "Use retrieved evidence first. If prior Q/A history clearly helps resolve the current question, "
+                "reuse it only when it is still consistent with the retrieved context."
+            ),
+        )
+
+    @staticmethod
+    def customer_feedback() -> ContextTemplate:
+        return ContextTemplate(
+            name="Customer Feedback Analysis",
+            instruction=(
+                "Extract the main issues from the input and organize them into logistics, product, service, "
+                "and pricing themes when applicable. Mention positive feedback separately from complaints."
+            ),
+            keywords=(
+                "delivery",
+                "shipping",
+                "delay",
+                "customer service",
+                "complaint",
+                "review",
+                "feedback",
+                "refund",
+            ),
+        )
+
+    @staticmethod
+    def technical_document() -> ContextTemplate:
+        return ContextTemplate(
+            name="Technical Document Summary",
+            instruction=(
+                "Summarize the material in terms of core concepts, main features, use cases, and important notes. "
+                "Prefer precise technical wording over generic paraphrases."
+            ),
+            keywords=(
+                "api",
+                "documentation",
+                "framework",
+                "authentication",
+                "request",
+                "error handling",
+                "interface",
+                "algorithm",
+            ),
+        )
+
+    @classmethod
+    def get_all_templates(cls) -> Dict[str, ContextTemplate]:
+        templates = [
+            cls.default(),
+            cls.customer_feedback(),
+            cls.technical_document(),
+        ]
+        return {template.name: template for template in templates}
+
+
+class DynamicContextTemplateSelector:
+    def __init__(self, templates: Dict[str, ContextTemplate] | None = None) -> None:
+        self.templates = templates or ContextTemplateFactory.get_all_templates()
+
+    def select(self, query: str, preferred_template: str | None = None) -> ContextTemplate:
+        if preferred_template and preferred_template in self.templates:
+            return self.templates[preferred_template]
+
+        query_lower = query.lower()
+        for name, template in self.templates.items():
+            if name == "Generic QA":
+                continue
+            if any(keyword in query_lower for keyword in template.keywords):
+                return template
+        return self.templates["Generic QA"]
+
+
+@lru_cache(maxsize=1)
+def _get_template_selector() -> DynamicContextTemplateSelector:
+    return DynamicContextTemplateSelector()
 
 
 @dataclass
@@ -114,6 +210,43 @@ def _normalize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _tokenize_for_similarity(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) > 2
+    }
+
+
+def _select_relevant_memory_turns(
+    query: str,
+    memory_turns: List[MemoryTurn],
+    *,
+    max_items: int,
+) -> List[MemoryTurn]:
+    if max_items <= 0 or not memory_turns:
+        return []
+
+    query_tokens = _tokenize_for_similarity(query)
+    if not query_tokens:
+        return memory_turns[-max_items:]
+
+    scored_turns: List[Tuple[float, int, MemoryTurn]] = []
+    for index, turn in enumerate(memory_turns):
+        turn_tokens = _tokenize_for_similarity(f"{turn.user_query} {turn.answer}")
+        if not turn_tokens:
+            continue
+        overlap = query_tokens & turn_tokens
+        if not overlap:
+            continue
+        score = len(overlap) / len(query_tokens | turn_tokens)
+        scored_turns.append((score, index, turn))
+
+    scored_turns.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [turn for _, _, turn in scored_turns[:max_items]]
+    return list(reversed(selected))
+
+
 def _format_memory_xml(memory_turns: List[MemoryTurn]) -> str:
     if not memory_turns:
         return "<memory />"
@@ -122,6 +255,23 @@ def _format_memory_xml(memory_turns: List[MemoryTurn]) -> str:
         for index, turn in enumerate(memory_turns, start=1)
     ]
     return _to_xml_block("memory", items)
+
+
+def _format_relevant_history_xml(query: str, memory_turns: List[MemoryTurn], max_items: int) -> str:
+    selected_turns = _select_relevant_memory_turns(query, memory_turns, max_items=max_items)
+    if not selected_turns:
+        return "<relevant_history />"
+
+    items = [
+        {
+            "turn_id": index,
+            "historical_question": turn.user_query,
+            "historical_answer": turn.answer,
+            "usage_note": "Reuse only if it helps answer the current question consistently with retrieved context.",
+        }
+        for index, turn in enumerate(selected_turns, start=1)
+    ]
+    return _to_xml_block("relevant_history", items)
 
 
 def _format_few_shot_examples(examples: List[PromptExample], response_format: str) -> str:
@@ -165,7 +315,13 @@ def _build_prompt_body(
     external_data: Dict[str, Any] | None = None,
     memory_turns: List[MemoryTurn] | None = None,
 ) -> str:
-    memory_xml = _format_memory_xml(memory_turns or [])
+    memory_turns = memory_turns or []
+    memory_xml = _format_memory_xml(memory_turns)
+    relevant_history_xml = _format_relevant_history_xml(
+        query,
+        memory_turns,
+        max_items=prompt_config.max_relevant_history_turns,
+    )
     metadata_xml = _to_xml_block("request_metadata", metadata or {})
     external_xml = _to_xml_block("external_data", external_data or {})
     examples_xml = (
@@ -173,17 +329,31 @@ def _build_prompt_body(
         if prompt_config.use_few_shot
         else "<few_shot_examples />"
     )
+    template = _get_template_selector().select(
+        query,
+        preferred_template=prompt_config.preferred_template if prompt_config.enable_context_templates else None,
+    )
+    template_xml = _to_xml_block(
+        "context_template",
+        {
+            "name": template.name,
+            "instruction": template.instruction,
+        },
+    )
     return (
         f"{prompt_config.system_role}\n"
         "Reason through the task internally before answering, but do not reveal hidden reasoning.\n"
         "Ground every claim in the supplied context or metadata.\n"
         "If the context is insufficient, say so clearly.\n"
+        "When relevant historical Q/A is provided, use it to answer follow-up questions without contradicting current evidence.\n"
         f"{_build_structured_response_instruction(prompt_config.response_format)}\n\n"
         "<task>\n"
         "Use retrieved evidence, optional external data, and short-term memory to answer the user query.\n"
         "</task>\n"
         f"{examples_xml}\n"
+        f"{template_xml}\n"
         f"{memory_xml}\n"
+        f"{relevant_history_xml}\n"
         f"{metadata_xml}\n"
         f"{external_xml}\n"
         f"{_to_xml_block('query', query)}\n"
@@ -191,6 +361,8 @@ def _build_prompt_body(
         "<quality_checks>\n"
         "  <item>Prefer grounded answers over fluent guesses.</item>\n"
         "  <item>Use citations when possible.</item>\n"
+        "  <item>Use the context template instruction to shape the answer structure when it improves clarity.</item>\n"
+        "  <item>Use historical answers only when they are relevant to the current question.</item>\n"
         "  <item>Keep the final answer concise and directly useful.</item>\n"
         "</quality_checks>\n"
     )
@@ -362,14 +534,7 @@ class RAGQueryEngine:
         self.memory.max_turns = self.prompt_config.max_memory_turns
 
     def _configure_top_k(self, top_k: int) -> None:
-        if top_k <= 0:
-            return
-        for attr in ("k", "vector_top_k", "bm25_top_k", "runtime_top_k"):
-            if hasattr(self.retriever, attr):
-                try:
-                    setattr(self.retriever, attr, top_k)
-                except Exception:
-                    pass
+        configure_runtime_top_k(self.retriever, top_k)
 
     def _generate_answer(
         self,

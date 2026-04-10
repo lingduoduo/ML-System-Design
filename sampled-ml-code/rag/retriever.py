@@ -21,6 +21,9 @@ except ImportError:  # pragma: no cover - optional dependency path
     LANGCHAIN_RETRIEVER_SUPPORT = False
 
 
+TOP_K_CONFIG_ATTRS = ("k", "vector_top_k", "bm25_top_k", "runtime_top_k")
+
+
 @dataclass
 class RetrievalClient:
     embedder: SimpleEmbedder
@@ -46,31 +49,7 @@ class LangChainRetrievalClient:
     retriever: Any
 
     def _configure_top_k(self, top_k: int) -> None:
-        if top_k <= 0:
-            return
-
-        if hasattr(self.retriever, "search_kwargs") and isinstance(self.retriever.search_kwargs, dict):
-            self.retriever.search_kwargs["k"] = top_k
-        if hasattr(self.retriever, "k"):
-            try:
-                self.retriever.k = top_k
-            except Exception:
-                pass
-        if hasattr(self.retriever, "vector_top_k"):
-            try:
-                self.retriever.vector_top_k = top_k
-            except Exception:
-                pass
-        if hasattr(self.retriever, "bm25_top_k"):
-            try:
-                self.retriever.bm25_top_k = top_k
-            except Exception:
-                pass
-        if hasattr(self.retriever, "runtime_top_k"):
-            try:
-                self.retriever.runtime_top_k = top_k
-            except Exception:
-                pass
+        configure_runtime_top_k(self.retriever, top_k)
 
     def retrieve(
         self,
@@ -82,16 +61,41 @@ class LangChainRetrievalClient:
         del mode, expand_query
         self._configure_top_k(top_k)
         documents = self.retriever.invoke(query)
-        if top_k > 0:
-            documents = documents[:top_k]
-        results: List[Tuple[float, Dict]] = []
-        for index, doc in enumerate(documents):
-            metadata = dict(getattr(doc, "metadata", {}))
-            metadata.setdefault("chunk_id", index)
-            metadata["text"] = doc.page_content
-            score = float(metadata.get("rerank_score", metadata.get("fusion_score", 1.0)))
-            results.append((score, metadata))
-        return results
+        return documents_to_retrieval_results(documents, top_k=top_k)
+
+
+def configure_runtime_top_k(target: Any, top_k: int) -> None:
+    if top_k <= 0:
+        return
+
+    search_kwargs = getattr(target, "search_kwargs", None)
+    if isinstance(search_kwargs, dict):
+        search_kwargs["k"] = top_k
+
+    for attr in TOP_K_CONFIG_ATTRS:
+        if hasattr(target, attr):
+            try:
+                setattr(target, attr, top_k)
+            except Exception:
+                pass
+
+
+def document_to_retrieval_result(doc: Any, index: int) -> Tuple[float, Dict[str, Any]]:
+    metadata = dict(getattr(doc, "metadata", {}) or {})
+    metadata.setdefault("chunk_id", index)
+    metadata["text"] = getattr(doc, "page_content", "") or ""
+    score = float(metadata.get("rerank_score", metadata.get("fusion_score", 1.0)))
+    return score, metadata
+
+
+def documents_to_retrieval_results(
+    documents: List[Any],
+    *,
+    top_k: int | None = None,
+) -> List[Tuple[float, Dict[str, Any]]]:
+    if top_k is not None and top_k > 0:
+        documents = documents[:top_k]
+    return [document_to_retrieval_result(doc, index) for index, doc in enumerate(documents)]
 
 
 def build_llm_reranker(llm: Any) -> Callable[[str, Any], float]:
