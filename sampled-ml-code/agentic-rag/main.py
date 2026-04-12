@@ -4,80 +4,62 @@ import asyncio
 import time
 from agentic_rag import UserRequest, build_workflow
 
+DEMO_QUERIES = [
+    "What is the refund policy for delayed orders, and can you check my order status?",
+    "Summarize the user documentation",
+    "What are the policy guidelines for refunds?",
+    "I have an issue with my order ORD-123",
+]
+
+
+def _print_state(index: int, query: str, state) -> None:
+    print(f"\n=== Test Query {index} ===")
+    print(f"Query: {query}")
+    print("FINAL RESPONSE")
+    print("-" * 40)
+    print(state.final_response)
+    print("\nTRACE (last 5 events)")
+    print("-" * 40)
+    for item in state.trace[-5:]:
+        print(item)
+    print("=" * 80)
+
 
 async def main_async() -> None:
     workflow = build_workflow()
-    test_queries = [
-        "What is the refund policy for delayed orders, and can you check my order status?",
-        "Summarize the user documentation",
-        "What are the policy guidelines for refunds?",
-        "I have an issue with my order ORD-123",
-    ]
-
     print("Running async version for better performance...")
-    start_time = time.time()
+    start_time = time.perf_counter()
 
-    for index, query in enumerate(test_queries, start=1):
-        print(f"\n=== Test Query {index} ===")
-        print(f"Query: {query}")
-
+    for index, query in enumerate(DEMO_QUERIES, start=1):
         request = UserRequest(
             user_id=f"user-{index}",
             channel="web",
             message=query,
         )
         state = await workflow.run_async(request)
+        _print_state(index, query, state)
 
-        print("FINAL RESPONSE")
-        print("-" * 40)
-        print(state.final_response)
-
-        print("\nTRACE (last 5 events)")
-        print("-" * 40)
-        for item in state.trace[-5:]:
-            print(item)
-        print("=" * 80)
-
-    end_time = time.time()
-    print(".2f")
+    elapsed = time.perf_counter() - start_time
+    print(f"Elapsed: {elapsed:.2f}s")
     print(f"Performance stats: {workflow.get_performance_stats()}")
 
 
 def main_sync() -> None:
     workflow = build_workflow()
-    test_queries = [
-        "What is the refund policy for delayed orders, and can you check my order status?",
-        "Summarize the user documentation",
-        "What are the policy guidelines for refunds?",
-        "I have an issue with my order ORD-123",
-    ]
-
     print("Running sync version...")
-    start_time = time.time()
+    start_time = time.perf_counter()
 
-    for index, query in enumerate(test_queries, start=1):
-        print(f"\n=== Test Query {index} ===")
-        print(f"Query: {query}")
-
+    for index, query in enumerate(DEMO_QUERIES, start=1):
         request = UserRequest(
             user_id=f"user-{index}",
             channel="web",
             message=query,
         )
         state = workflow.run(request)
+        _print_state(index, query, state)
 
-        print("FINAL RESPONSE")
-        print("-" * 40)
-        print(state.final_response)
-
-        print("\nTRACE (last 5 events)")
-        print("-" * 40)
-        for item in state.trace[-5:]:
-            print(item)
-        print("=" * 80)
-
-    end_time = time.time()
-    print(".2f")
+    elapsed = time.perf_counter() - start_time
+    print(f"Elapsed: {elapsed:.2f}s")
     print(f"Performance stats: {workflow.get_performance_stats()}")
 
 

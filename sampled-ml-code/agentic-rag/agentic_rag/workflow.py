@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional, Set
@@ -48,6 +49,8 @@ class AgentWorkflow:
         self.tool_registry = tool_registry
         self.logger = logger
         self.response_cache: OrderedDict[str, str] = OrderedDict()
+        self._cache_lock = threading.RLock()
+        self._stats_lock = threading.RLock()
         self.performance_stats = {
             "total_requests": 0,
             "cache_hits": 0,
@@ -57,15 +60,15 @@ class AgentWorkflow:
         }
 
     def run(self, request: UserRequest) -> AgentState:
-        start_time = time.time()
-        self.performance_stats["total_requests"] += 1
+        start_time = time.perf_counter()
+        self._increment_total_requests()
 
         state = AgentState(request_id=str(uuid.uuid4()), user_request=request)
         self.gateway.check(request)
         self.logger.log(state, "gateway", {"status": "passed"})
 
         if self._try_fill_from_cache(state):
-            self.performance_stats["cache_hits"] += 1
+            self._increment_cache_hits()
             self.memory_store.save_turn(
                 user_id=request.user_id,
                 user_message=request.message,
@@ -99,8 +102,8 @@ class AgentWorkflow:
         return state
 
     async def run_async(self, request: UserRequest) -> AgentState:
-        start_time = time.time()
-        self.performance_stats["total_requests"] += 1
+        start_time = time.perf_counter()
+        self._increment_total_requests()
 
         state = AgentState(request_id=str(uuid.uuid4()), user_request=request)
         self.gateway.check(request)
@@ -112,7 +115,7 @@ class AgentWorkflow:
                 user_message=request.message,
                 assistant_message=state.final_response,
             )
-            self.performance_stats["cache_hits"] += 1
+            self._increment_cache_hits()
             self._update_response_time(start_time)
             return state
 
@@ -167,13 +170,14 @@ class AgentWorkflow:
         retriever: RetrievalModel,
     ) -> List[RetrievedDocument]:
         if route in target_routes:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             documents = await loop.run_in_executor(None, retriever.retrieve, query, DEFAULT_TOP_K)
             return self.reranker.rerank(query, documents)
         return []
 
     def get_performance_stats(self) -> Dict[str, float]:
-        return dict(self.performance_stats)
+        with self._stats_lock:
+            return dict(self.performance_stats)
 
     def batch_run(self, requests: List[UserRequest]) -> List[AgentState]:
         if not requests:
@@ -188,11 +192,12 @@ class AgentWorkflow:
 
     def _try_fill_from_cache(self, state: AgentState) -> bool:
         dedupe_key = self.gateway.dedupe_key(state.user_request)
-        cached_response = self.response_cache.get(dedupe_key)
-        if cached_response is None:
-            return False
+        with self._cache_lock:
+            cached_response = self.response_cache.get(dedupe_key)
+            if cached_response is None:
+                return False
 
-        self.response_cache.move_to_end(dedupe_key)
+            self.response_cache.move_to_end(dedupe_key)
         state.final_response = cached_response
         self.logger.log(state, "cache_hit", {"dedupe_key": dedupe_key})
         self.logger.log(state, "completed", {"request_id": state.request_id, "cached": True})
@@ -327,15 +332,25 @@ class AgentWorkflow:
         self.logger.log(state, "completed", {"request_id": state.request_id, "cached": False})
 
     def _update_response_time(self, start_time: float) -> None:
-        response_time = time.time() - start_time
-        self.performance_stats["total_response_time"] += response_time
-        self.performance_stats["avg_response_time"] = (
-            self.performance_stats["total_response_time"] / self.performance_stats["total_requests"]
-        )
+        response_time = time.perf_counter() - start_time
+        with self._stats_lock:
+            self.performance_stats["total_response_time"] += response_time
+            self.performance_stats["avg_response_time"] = (
+                self.performance_stats["total_response_time"] / self.performance_stats["total_requests"]
+            )
 
     def _cache_response(self, request: UserRequest, response: str) -> None:
         dedupe_key = self.gateway.dedupe_key(request)
-        self.response_cache[dedupe_key] = response
-        self.response_cache.move_to_end(dedupe_key)
-        if len(self.response_cache) > RESPONSE_CACHE_SIZE:
-            self.response_cache.popitem(last=False)
+        with self._cache_lock:
+            self.response_cache[dedupe_key] = response
+            self.response_cache.move_to_end(dedupe_key)
+            if len(self.response_cache) > RESPONSE_CACHE_SIZE:
+                self.response_cache.popitem(last=False)
+
+    def _increment_total_requests(self) -> None:
+        with self._stats_lock:
+            self.performance_stats["total_requests"] += 1
+
+    def _increment_cache_hits(self) -> None:
+        with self._stats_lock:
+            self.performance_stats["cache_hits"] += 1
