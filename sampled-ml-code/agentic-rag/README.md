@@ -1,39 +1,66 @@
 # Agentic RAG System
 
-Modular agentic RAG prototype for customer-support style workflows. The project is organized around routing, retrieval, planning, tool use, reflection, memory, and a workflow orchestrator.
+High-performance agentic RAG prototype with advanced orchestration patterns, task management, and comprehensive monitoring. Designed for enterprise customer-support workflows with intelligent routing, multi-agent coordination, and production-ready observability.
 
-## Overview
+## Key Features
 
-- Routes requests into `general_qa`, `policy_qa`, or `tool_workflow`
-- Retrieves grounded context from local text documents under `data/`
-- Supports built-in tools for order lookup, ticket creation, and document summaries
-- Uses reflection and optional human approval for risky cases
-- Exposes both synchronous and asynchronous workflow entrypoints
+### 🏗️ Advanced Architecture
+- **Modular Design**: Router, planner, QA agent, reflection, memory, and workflow orchestrator
+- **Task-Based Execution**: DAG-based task orchestration with dependencies and priorities
+- **Multi-Agent Coordination**: Specialized agents for routing, planning, QA, and tool execution
+- **Flexible Routing**: Routes to general Q&A, policy Q&A, or complex tool workflows
+
+### 🚀 Performance & Optimization
+- **High-Performance Retrieval**: Lexical fallback and optional vector search with FAISS
+- **Batch Processing**: Process multiple concurrent requests efficiently
+- **Async Support**: Full asynchronous processing with concurrent I/O
+- **Response Caching**: Intelligent deduplication and in-memory caching
+- **JIT Compilation**: Optional Numba acceleration for scoring functions
+
+### 📊 Enterprise Monitoring
+- **Comprehensive Metrics**: Track execution time, cost, memory, success rates per task
+- **Monitoring Dashboard**: Real-time system metrics and performance analytics
+- **Performance History**: Aggregate statistics across all executions
+- **Tool Metrics**: Per-tool success rates and performance tracking
+
+### 🔄 Reliability Features
+- **Retry Logic**: Intelligent retry handling based on task criticality
+- **Early Exit**: Stop execution if critical tasks fail
+- **Human Approval Gates**: Manual review for high-risk operations
+- **Graceful Degradation**: Fallback mechanisms for missing dependencies
+
+### 🛠️ Built-in Tools
+- `search_orders(order_id)` - Order status lookup
+- `create_ticket(issue, severity)` - Support ticket creation
+- `summarize_user_docs()` - Document summarization
+- `summarize_policy_docs()` - Policy document summaries
 
 ## Project Layout
 
 ```text
 .
 ├── agentic_rag
-│   ├── approval.py
-│   ├── builder.py
-│   ├── config.py
-│   ├── gateway.py
-│   ├── memory.py
-│   ├── observability.py
-│   ├── planner.py
-│   ├── qa.py
-│   ├── reflection.py
-│   ├── retrieval.py
-│   ├── router.py
-│   ├── schema.py
-│   ├── tool_selection.py
-│   ├── tools.py
-│   └── workflow.py
+│   ├── approval.py          # Human approval service for risky operations
+│   ├── builder.py           # Workflow construction and dependency injection
+│   ├── config.py            # Configuration management and feature flags
+│   ├── gateway.py           # Request validation and preprocessing
+│   ├── memory.py            # Conversation memory with async support
+│   ├── monitoring.py        # Performance monitoring and dashboard
+│   ├── observability.py     # Logging and tracing utilities
+│   ├── planner.py           # Task planning and execution steps
+│   ├── qa.py                # Question-answering agent
+│   ├── reflection.py        # Response validation and refinement
+│   ├── retrieval.py         # Document processing and retrieval
+│   ├── router.py            # Intelligent request routing
+│   ├── schema.py            # Data models, task nodes, and metrics
+│   ├── tool_selection.py    # Tool selection policies
+│   ├── tools.py             # Tool registry and BaseToolAgent
+│   └── workflow.py          # Main orchestration with task management
 ├── data
-│   ├── policy_docs.txt
-│   └── user_docs.txt
-├── main.py
+│   ├── policy_docs.txt      # Policy documentation
+│   └── user_docs.txt        # User documentation
+├── main.py                  # CLI interface and demo
+├── .env.example             # Environment variables template
 └── README.md
 ```
 
@@ -117,6 +144,73 @@ export OPENAI_BASE_URL=https://your-compatible-endpoint.example.com
 
 - File: `agentic_rag/workflow.py`
 - Coordinates gateway checks, memory loading, routing, retrieval, planning, tool execution, reflection, caching, and final response assembly
+
+## Advanced Features
+
+### Task-Based Orchestration
+
+The system uses a DAG-based task execution model for complex workflows:
+
+```python
+from agentic_rag.schema import TaskNode, TaskType, TaskStatus
+
+# Tasks are created with dependencies, priorities, and criticality
+task = TaskNode(
+    task_id="retrieval_1",
+    task_type=TaskType.RETRIEVAL,
+    description="Retrieve user documents",
+    params={"query": "refund policy"},
+    dependencies=[],
+    priority=1,
+    is_critical=True,  # Fail fast if this task fails
+    max_retries=3
+)
+```
+
+### Tool Agents with Performance Tracking
+
+Create custom tool agents with built-in performance metrics:
+
+```python
+from agentic_rag.tools import BaseToolAgent
+
+class OrderLookupAgent(BaseToolAgent):
+    def __init__(self):
+        super().__init__("order_lookup")
+    
+    def _execute_core(self, params):
+        order_id = params.get("order_id")
+        # Execute tool logic
+        return {"order_id": order_id, "status": "shipped"}
+```
+
+### Monitoring Dashboard
+
+Real-time performance analytics:
+
+```python
+workflow = build_workflow()
+
+# Process requests
+result = workflow.run(request)
+
+# Get comprehensive metrics
+metrics = workflow.get_monitoring_metrics()
+print(f"Success rate: {metrics['success_rate']:.2%}")
+print(f"Avg execution time: {metrics['avg_execution_time']:.2f}s")
+
+# Get detailed dashboard
+dashboard = workflow.get_dashboard_summary()
+print(f"Total tasks: {dashboard['system_metrics']['total_tasks']}")
+print(f"Cost estimate: ${dashboard['system_metrics']['total_cost']:.4f}")
+```
+
+### Retry Logic & Early Exit
+
+The system includes intelligent retry handling:
+- Tasks marked `is_critical=True` trigger early exit on failure
+- Non-critical tasks get fewer retries
+- Monitors error count and terminates if too many failures
 
 ## Usage
 

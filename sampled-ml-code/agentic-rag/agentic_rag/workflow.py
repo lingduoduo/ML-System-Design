@@ -11,13 +11,14 @@ from .approval import HumanApprovalService
 from .config import DEFAULT_TOP_K, RESPONSE_CACHE_SIZE, TORCH_AVAILABLE
 from .gateway import Gateway
 from .memory import MemoryStore
+from .monitoring import MonitoringDashboard
 from .observability import TraceLogger
 from .planner import ReturnPlannerAgent
 from .qa import QAAgent
 from .reflection import ReflectionModel
 from .retrieval import Reranker, RetrievalModel
 from .router import RouterAgent
-from .schema import AgentState, RetrievedDocument, RouteDecision, UserRequest
+from .schema import AgentState, RetrievedDocument, RouteDecision, TaskNode, TaskStatus, TaskType, UserRequest
 from .tools import ToolRegistry
 
 class AgentWorkflow:
@@ -51,6 +52,7 @@ class AgentWorkflow:
         self.response_cache: OrderedDict[str, str] = OrderedDict()
         self._cache_lock = threading.RLock()
         self._stats_lock = threading.RLock()
+        self.monitoring_dashboard = MonitoringDashboard()
         self.performance_stats = {
             "total_requests": 0,
             "cache_hits": 0,
@@ -189,6 +191,33 @@ class AgentWorkflow:
             return []
         tasks = [self.run_async(request) for request in requests]
         return await asyncio.gather(*tasks)
+
+    def should_retry_task(self, task: TaskNode) -> bool:
+        """Check if task should be retried."""
+        if task.status != TaskStatus.FAILED:
+            return False
+        if task.retry_count >= task.max_retries:
+            return False
+        # Don't retry non-critical tasks multiple times
+        if not task.is_critical and task.retry_count > 0:
+            return False
+        return True
+
+    def check_early_exit(self, completed_tasks: Dict[str, bool], failed_tasks: Dict[str, bool]) -> bool:
+        """Check if execution should be terminated early."""
+        # Exit if any critical task has failed
+        # This would need to be connected to task criticality tracking
+        if len(failed_tasks) > 3:
+            return True
+        return False
+
+    def get_dashboard_summary(self) -> Dict[str, any]:
+        """Get comprehensive monitoring dashboard summary."""
+        return self.monitoring_dashboard.get_dashboard_summary()
+
+    def get_monitoring_metrics(self) -> Dict[str, float]:
+        """Get quick performance summary from monitoring."""
+        return self.monitoring_dashboard.get_performance_summary()
 
     def _try_fill_from_cache(self, state: AgentState) -> bool:
         dedupe_key = self.gateway.dedupe_key(state.user_request)
