@@ -1,0 +1,25 @@
+# User Documentation
+
+## Getting Started
+Welcome to our platform! This guide will help you get started with using our services.
+
+### Account Setup
+1. Create an account at our website
+2. Verify your email address
+3. Set up two-factor authentication for security
+
+### Basic Features
+- Order tracking
+- Customer support tickets
+- Refund requests
+- Policy information
+
+## Common Issues
+- Orders may be delayed due to high demand
+- Refunds are processed within 5-7 business days
+- Contact support for urgent issues
+
+## Best Practices
+- Keep your order ID handy for faster support
+- Check order status regularly
+- Use the ticket system for complex issues
