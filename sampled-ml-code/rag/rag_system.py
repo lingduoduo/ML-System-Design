@@ -56,6 +56,7 @@ class RAGSystem:
     tracker: ExperimentTracker
     registry: ModelRegistry
     deployment_info: dict
+    runtime_mode: str
     langchain_feature_store: LangChainFeatureStore | None = None
     rewrite_chain: Any | None = None
     rag_chain: Any | None = None
@@ -169,6 +170,7 @@ def build_rag_system() -> RAGSystem:
             tracker=tracker,
             registry=registry,
             deployment_info=deployment_info,
+            runtime_mode="rich",
             langchain_feature_store=runtime.langchain_feature_store,
             rewrite_chain=runtime.rewrite_chain,
             rag_chain=runtime.rag_chain,
@@ -196,6 +198,7 @@ def build_rag_system() -> RAGSystem:
         tracker=tracker,
         registry=registry,
         deployment_info=deployment_info,
+        runtime_mode="fallback",
         langchain_feature_store=None,
         rewrite_chain=None,
         rag_chain=None,

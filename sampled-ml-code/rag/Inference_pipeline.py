@@ -74,6 +74,26 @@ class PromptOptimizationConfig:
     )
 
 
+@dataclass(frozen=True)
+class AnswerValidationResult:
+    grounded: bool
+    confidence: str
+    answer_context_overlap: float
+    query_context_overlap: float
+    warnings: Tuple[str, ...] = ()
+    summary: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "grounded": self.grounded,
+            "confidence": self.confidence,
+            "answer_context_overlap": round(self.answer_context_overlap, 4),
+            "query_context_overlap": round(self.query_context_overlap, 4),
+            "warnings": list(self.warnings),
+            "summary": self.summary,
+        }
+
+
 class ContextTemplateFactory:
     @staticmethod
     def default() -> ContextTemplate:
@@ -216,6 +236,77 @@ def _tokenize_for_similarity(text: str) -> set[str]:
         for token in re.findall(r"[a-z0-9]+", text.lower())
         if len(token) > 2
     }
+
+
+def validate_generated_answer(
+    *,
+    query: str,
+    answer: str,
+    retrieved_context: List[str],
+) -> AnswerValidationResult:
+    query_tokens = _tokenize_for_similarity(query)
+    answer_tokens = _tokenize_for_similarity(answer)
+    context_tokens = _tokenize_for_similarity(" ".join(retrieved_context))
+
+    warnings: List[str] = []
+
+    if not answer_tokens:
+        return AnswerValidationResult(
+            grounded=False,
+            confidence="low",
+            answer_context_overlap=0.0,
+            query_context_overlap=0.0,
+            warnings=("Empty answer text.",),
+            summary="The answer could not be validated because it is empty.",
+        )
+
+    if not retrieved_context:
+        warnings.append("No retrieved context was available for validation.")
+        return AnswerValidationResult(
+            grounded=False,
+            confidence="low",
+            answer_context_overlap=0.0,
+            query_context_overlap=0.0,
+            warnings=tuple(warnings),
+            summary="The answer was generated without captured retrieval context, so grounding could not be verified.",
+        )
+
+    answer_overlap = len(answer_tokens & context_tokens) / len(answer_tokens) if answer_tokens else 0.0
+    query_overlap = len(query_tokens & context_tokens) / len(query_tokens) if query_tokens else 0.0
+
+    numeric_claims = re.findall(r"\b\d+(?:\.\d+)?\b", answer)
+    unsupported_numeric_claims = [
+        claim for claim in numeric_claims if claim not in " ".join(retrieved_context)
+    ]
+    if unsupported_numeric_claims:
+        warnings.append("The answer includes numeric claims that were not found in the retrieved context.")
+
+    if query_overlap < 0.2:
+        warnings.append("Retrieved context has weak lexical overlap with the query.")
+    if answer_overlap < 0.15:
+        warnings.append("The answer has limited lexical support from the retrieved context.")
+
+    grounded = answer_overlap >= 0.15 and query_overlap >= 0.2 and not unsupported_numeric_claims
+    if grounded and answer_overlap >= 0.35:
+        confidence = "high"
+    elif grounded:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    if grounded:
+        summary = "The answer appears reasonably grounded in the retrieved context."
+    else:
+        summary = "The answer may rely on weak or incomplete support from the retrieved context."
+
+    return AnswerValidationResult(
+        grounded=grounded,
+        confidence=confidence,
+        answer_context_overlap=answer_overlap,
+        query_context_overlap=query_overlap,
+        warnings=tuple(warnings),
+        summary=summary,
+    )
 
 
 def _select_relevant_memory_turns(

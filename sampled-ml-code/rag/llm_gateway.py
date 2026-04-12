@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Dict, List
 
+from Inference_pipeline import AnswerValidationResult, validate_generated_answer
 from feature_pipeline import rewrite_question
 from retriever import documents_to_retrieval_results
 
@@ -35,6 +36,7 @@ class GatewayExecutionResult:
     response: str
     retrieved_context: List[str]
     retrieved: List[tuple[float, Dict[str, Any]]] = field(default_factory=list)
+    validation: AnswerValidationResult | None = None
     used_rewrite: bool = False
     used_multi_step: bool = False
 
@@ -44,10 +46,17 @@ class LLMGateway:
     system: Any
     request_count: int = 0
     engine_counts: Dict[str, int] = field(default_factory=dict)
+    validation_outcomes: Dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for engine_name in ("fast", "balanced", "premium"):
             self.engine_counts.setdefault(engine_name, 0)
+        for outcome in ("grounded", "needs_review"):
+            self.validation_outcomes.setdefault(outcome, 0)
+
+    @property
+    def validation_counts(self) -> Dict[str, int]:
+        return dict(self.validation_outcomes)
 
     @cached_property
     def engines(self) -> Dict[str, GatewayEngine]:
@@ -151,10 +160,15 @@ class LLMGateway:
                 response=response,
                 retrieved_context=[],
                 retrieved=[],
+                validation=self._validate_response(
+                    query=rewritten_query,
+                    response=response,
+                    retrieved_context=[],
+                ),
                 used_rewrite=used_rewrite,
                 used_multi_step=True,
             )
-            self._record(engine.name)
+            self._record(engine.name, result.validation)
             return result
 
         if engine.name in {"balanced", "premium"} and self.system.query_engine is not None:
@@ -165,7 +179,7 @@ class LLMGateway:
                 selected_model=selected_model,
                 used_rewrite=used_rewrite,
             )
-            self._record(engine.name)
+            self._record(engine.name, result.validation)
             return result
 
         result = self._run_direct_rag(
@@ -177,8 +191,21 @@ class LLMGateway:
             selected_model=selected_model,
             used_rewrite=used_rewrite,
         )
-        self._record(engine.name)
+        self._record(engine.name, result.validation)
         return result
+
+    def _validate_response(
+        self,
+        *,
+        query: str,
+        response: str,
+        retrieved_context: List[str],
+    ) -> AnswerValidationResult:
+        return validate_generated_answer(
+            query=query,
+            answer=response,
+            retrieved_context=retrieved_context,
+        )
 
     def _run_multi_step(self, query: str) -> str:
         from Inference_pipeline import run_multi_step_search
@@ -205,13 +232,19 @@ class LLMGateway:
             ),
         )
         retrieved = documents_to_retrieval_results(result.documents, top_k=top_k)
+        retrieved_context = [doc.page_content for doc in result.documents]
         return GatewayExecutionResult(
             engine=engine,
             selected_model=selected_model,
             query=query,
             response=result.answer,
-            retrieved_context=[doc.page_content for doc in result.documents],
+            retrieved_context=retrieved_context,
             retrieved=retrieved,
+            validation=self._validate_response(
+                query=query,
+                response=result.answer,
+                retrieved_context=retrieved_context,
+            ),
             used_rewrite=used_rewrite,
             used_multi_step=False,
         )
@@ -242,26 +275,36 @@ class LLMGateway:
                 used_rewrite=used_rewrite,
             ),
         )
+        retrieved_context = [metadata["text"] for _, metadata in retrieved]
         return GatewayExecutionResult(
             engine=engine,
             selected_model=selected_model,
             query=query,
             response=response,
-            retrieved_context=[metadata["text"] for _, metadata in retrieved],
+            retrieved_context=retrieved_context,
             retrieved=retrieved,
+            validation=self._validate_response(
+                query=query,
+                response=response,
+                retrieved_context=retrieved_context,
+            ),
             used_rewrite=used_rewrite,
             used_multi_step=False,
         )
 
-    def _record(self, engine_name: str) -> None:
+    def _record(self, engine_name: str, validation: AnswerValidationResult | None = None) -> None:
         self.request_count += 1
         self.engine_counts[engine_name] = self.engine_counts.get(engine_name, 0) + 1
+        if validation is not None:
+            bucket = "grounded" if validation.grounded else "needs_review"
+            self.validation_outcomes[bucket] = self.validation_outcomes.get(bucket, 0) + 1
 
     def stats(self) -> Dict[str, Any]:
         return {
             "engine_types": list(self.engines.keys()),
             "request_count": self.request_count,
             "engine_counts": dict(self.engine_counts),
+            "validation_counts": self.validation_counts,
             "query_engine_available": self.system.query_engine is not None,
             "multi_step_available": self.system.multi_step_agent is not None,
             "default_model": self.resolve_model_label(self.select_engine("what is rag")),

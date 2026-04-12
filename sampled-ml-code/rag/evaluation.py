@@ -143,19 +143,39 @@ class EvaluationTracker:
     max_history_events: int = 500
     response_preview_chars: int = 200
 
-    def record_run(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:
+    def record_run(
+        self,
+        query: str,
+        retrieved: List[Tuple[float, Dict[str, Any]]],
+        response: str,
+        *,
+        validation: Dict[str, Any] | None = None,
+        engine: str | None = None,
+    ) -> Dict[str, Any]:
         event = {
             "query": query,
             "retrieved_chunks": [metadata.get("text", "") for _, metadata in retrieved],
             "response_preview": response[: self.response_preview_chars],
         }
+        if validation is not None:
+            event["validation"] = validation
+        if engine is not None:
+            event["engine"] = engine
         self.history.append(event)
         if len(self.history) > self.max_history_events:
             del self.history[: len(self.history) - self.max_history_events]
         return event
 
-    def log_request(self, query: str, retrieved: List[Tuple[float, Dict[str, Any]]], response: str) -> Dict[str, Any]:
-        return self.record_run(query, retrieved, response)
+    def log_request(
+        self,
+        query: str,
+        retrieved: List[Tuple[float, Dict[str, Any]]],
+        response: str,
+        *,
+        validation: Dict[str, Any] | None = None,
+        engine: str | None = None,
+    ) -> Dict[str, Any]:
+        return self.record_run(query, retrieved, response, validation=validation, engine=engine)
 
 
 class Monitor(EvaluationTracker):

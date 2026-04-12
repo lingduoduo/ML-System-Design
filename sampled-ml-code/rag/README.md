@@ -1,141 +1,190 @@
 # RAG Sample System
 
-This repository is a compact Retrieval-Augmented Generation (RAG) example in Python. It supports two operating modes:
+This repository is a compact, code-first reference implementation of a Retrieval-Augmented Generation (RAG) system in Python.
 
-- a lightweight in-memory teaching pipeline with minimal dependencies
-- an optional LangChain + FAISS + local Hugging Face pipeline for more realistic retrieval and generation
+It is designed to show the moving parts of a RAG stack without requiring a full production environment:
 
-The FastAPI app will try to use the richer local stack when dependencies and local data are available, and otherwise fall back to the toy in-memory path.
+- a toy in-memory pipeline that works with minimal dependencies
+- an optional richer local pipeline built on LangChain, FAISS, BM25, and local Hugging Face models
+- a FastAPI service that exposes the system through simple HTTP endpoints
+- evaluation, training, routing, and deployment stubs that make the repo feel like a small end-to-end ML system instead of a single script
 
-## What The System Does
+The app automatically tries to boot the richer stack first and falls back to the toy path if optional dependencies or local data are missing.
 
-The project walks through the main stages of a RAG system:
+## Why This Repo Exists
 
-- load or assemble documents
-- split them into chunks
-- build retrieval indices
-- retrieve relevant context
-- optionally rewrite the question
-- optionally run a multi-step inference agent
-- generate an answer
-- monitor and evaluate behavior
+This repo is useful if you want to study or demo:
 
-The main assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py).
+- how documents move from collection to chunking to retrieval
+- how different retrieval modes can sit behind one API
+- how query rewriting and multi-step reasoning can be layered onto RAG
+- how to organize a small RAG codebase into pipelines instead of one notebook or script
+- how to keep a service usable even when the "full" stack is unavailable
 
-## Architecture
+This is not a production-ready RAG platform. It is a teaching and prototyping repo with clear seams for extension.
 
-### Core modules
+## How The System Runs
 
-1. [data_collection_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/data_collection_pipeline.py) builds a small in-memory document store from sample source data.
-2. [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py) contains:
-   - the toy feature pipeline
-   - retriever implementations for `dense`, `bm25`, and `hnsw`
-   - query expansion
-   - optional LangChain/FAISS feature-store builders
-   - local Hugging Face embedding and LLM helpers
-   - question rewriting helpers
-3. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) exposes retrieval clients for both the toy index and the LangChain retriever, plus a hybrid `MultiPathRetriever` that fuses lexical and vector search.
-4. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) contains:
-   - prompt construction
-   - static and dynamic context-template selection
-   - relevant historical Q/A reuse for follow-up questions
-   - `LLMTwin`
-   - LangChain RAG chain construction
-   - `RAGQueryEngine` for retrieve -> rerank -> answer
-   - `CrossEncoderReranker` for optional query-document reranking
-   - `QueryUnderstandingEngine` for rewrite, HyDE, and decomposition
-   - `RetrievalToolset` for domain retrieval actions
-   - multi-step agent planning and execution
-5. [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) contains:
-   - evaluation tracking
-   - evaluation dataset utilities
-   - judge-based evaluation helpers
-   - retrieval evaluation metrics
-6. [deploy.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/deploy.py) returns simple deployment metadata.
-7. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py) exposes the FastAPI API and caches the initialized system.
+There are two runtime modes.
 
-The richer LangChain-backed runtime is assembled through `RichRAGBuilder` in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py), which keeps loading, hybrid retrieval, reranking, and agent setup in one place.
+### 1. Fallback teaching mode
 
-### Startup behavior
+This path always works as long as the basic Python dependencies are available.
 
-When [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py) builds the app state, it:
+It uses:
 
-1. creates the sample in-memory document store
-2. builds the toy feature store and fallback model path
-3. tries to load markdown files from `./data/`
-4. tries to build a LangChain feature store, hybrid retrievers, a rewrite chain, a RAG chain, and a multi-step inference agent
-5. uses that richer stack if initialization succeeds
-6. falls back to the toy pipeline if dependencies or data are missing
+- a tiny in-memory document store from [data_collection_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/data_collection_pipeline.py)
+- a lightweight feature pipeline and vector store from [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py)
+- a simple retrieval client from [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py)
+- a placeholder fine-tuned model path from [training_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/training_pipeline.py)
 
-That keeps the app usable in a minimal environment while still supporting a richer local stack.
+This mode is good for understanding the control flow of the system.
+
+### 2. Rich local mode
+
+This path activates when:
+
+- optional LangChain / FAISS / transformer dependencies are installed
+- markdown files are available in `./data/`
+
+It adds:
+
+- document loading and chunking from local markdown files
+- Hugging Face embeddings
+- a FAISS vector store
+- BM25 + vector hybrid retrieval
+- optional query rewriting
+- optional cross-encoder reranking
+- a standard query engine for retrieve -> rerank -> answer
+- an optional multi-step agent path
+
+The runtime assembly happens in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py).
+
+## Workflow
+
+You can describe the system with the following high-level workflow:
+
+```text
+User question
+   ↓
+[Retrieval] -> FAISS + Sentence Transformers (lightweight local retrieval, with fallback to the toy retriever)
+   ↓
+[Generation] -> GPT / fine-tuned model (in this repo, mainly a local HF model or placeholder fine-tuned model)
+   ↓
+[Validation] -> Prompt-based grounded / consistency checks (light hallucination resistance, not a standalone fact verifier)
+   ↖______↓______↗
+         |
+   [LangGraph] <- Flow control: continue tool use, rewrite the query, decompose subquestions, retry
+         ↓
+   [Evaluation] <- EvaluationTracker + judge / RAGAS utilities (LangSmith can be added later)
+         ↓
+   [Serving] <- FastAPI (standard API interface)
+```
+
+How that maps to this repo:
+
+- `[Retrieval]`: the rich path uses FAISS and `sentence-transformers`; the fallback path uses the in-memory retriever in [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py) and [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py)
+- `[Generation]`: answers come from the `LLMTwin`, the query engine, or the multi-step agent in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py)
+- `[Validation]`: the repo now includes a lightweight validation pass that checks lexical grounding against retrieved context and flags low-support answers; it is still heuristic, not a standalone factual verification service
+- `[LangGraph]`: the multi-step planner/tool loop is implemented in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) when optional dependencies are installed
+- `[Evaluation]`: lightweight tracing/evaluation exists in [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py)
+- `[LangSmith]`: not currently integrated; if you want, it should be described as a future observability/evaluation extension rather than an existing feature
+- `[Serving]`: FastAPI endpoints live in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
+
+## Request Flow
+
+At a high level, a request moves through the system like this:
+
+1. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py) receives the HTTP request.
+2. [llm_gateway.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/llm_gateway.py) chooses an execution path: `fast`, `balanced`, or `premium`.
+3. The system may rewrite the query if rewriting is enabled and the rich runtime is available.
+4. Retrieval runs through either the toy retriever or the LangChain-backed hybrid retriever.
+5. The selected answering path generates a response:
+   - direct retrieval + answer generation
+   - query-engine-based RAG
+   - multi-step agent execution
+6. A lightweight validation pass scores how well the answer is supported by retrieved context.
+7. [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) logs the run in memory for lightweight monitoring.
+
+## Repo Map
+
+The codebase is split by responsibility rather than framework layers.
+
+- [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py): FastAPI app, request/response models, cached system startup, `/health`, `/stats`, and `/generate`
+- [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py): top-level system assembly and fallback logic
+- [llm_gateway.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/llm_gateway.py): routes requests to `fast`, `balanced`, or `premium` execution paths
+- [data_collection_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/data_collection_pipeline.py): sample source ingestion, cleaning, ETL, and in-memory document store creation
+- [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py): chunking, embeddings, toy index construction, LangChain feature-store setup, and query rewriting helpers
+- [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py): toy retrieval client, LangChain retrieval adapter, and hybrid `MultiPathRetriever`
+- [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py): prompt construction, memory helpers, context templates, RAG query engine, reranking, and multi-step agent behavior
+- [training_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/training_pipeline.py): placeholder model training, evaluation, registry, and experiment tracking
+- [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py): runtime logging plus optional evaluation utilities and experiments
+- [deploy.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/deploy.py): simple deployment metadata stub
 
 ## Retrieval Modes
 
-The toy retrieval stack supports three strategies:
+The fallback retriever supports three retrieval modes behind one API:
 
-- `dense`: embedding-based dense retrieval over the in-memory vector matrix
-- `bm25`: lexical retrieval using BM25-style scoring
-- `hnsw`: an approximate dense retrieval path with a lightweight HNSW-style neighbor graph
+- `dense`: dense similarity over the toy embedding/vector path
+- `bm25`: lexical retrieval
+- `hnsw`: an educational approximation of ANN-style retrieval
 
-Query expansion is also available and generates a few synonym-based variants before retrieval. In the richer LangChain path, retrieval can also combine multiple data paths, such as dense vector search and BM25 lexical search.
+In the richer runtime, the system can also use a hybrid retriever that combines:
 
-In the current LangChain-backed setup, hybrid retrieval is implemented with `MultiPathRetriever`, which:
+- BM25 lexical recall
+- vector similarity search over FAISS
+- score fusion and deduplication
+- optional reranking
 
-- runs BM25 and vector retrieval in parallel paths
-- fuses the scores with configurable weights
-- deduplicates overlapping results
-- respects runtime `top_k` limits from the API layer
-- keeps the strongest items and annotates metadata with retrieval provenance
+## Gateway Tiers
 
-The retrieval helpers also normalize LangChain document outputs into a shared `(score, metadata)` shape so the serving, evaluation, and prompt layers can reuse the same result format.
+The API supports model selection through the gateway instead of exposing raw model internals.
 
-For standard answer generation, the richer runtime can also route queries through `RAGQueryEngine`, which:
+- `fast`: low-latency direct retrieval + answer generation
+- `balanced`: standard RAG query engine when available
+- `premium`: prefers the multi-step agent path when available
+- `auto`: lets the gateway choose based on query complexity
 
-- retrieves documents from the hybrid retriever
-- optionally reranks them with the `BAAI/bge-reranker-base` cross-encoder
-- builds a bounded context window
-- generates the final answer from that context
+This behavior lives in [llm_gateway.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/llm_gateway.py).
 
-## Inference Features
+## Quick Start
 
-The inference layer supports three levels of behavior:
+### Install minimal dependencies
 
-- standard single-step answer generation
-- optional question rewriting before retrieval
-- optional multi-step planning with ambiguity-aware query rewriting
+```bash
+pip install fastapi uvicorn pydantic numpy
+```
 
-Multi-step querying now lives in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py), not in a separate module.
+### Run the API
 
-In the current implementation, the multi-step agent can:
+```bash
+uvicorn serving:app --reload
+```
 
-- use three query-understanding strategies: query rewrite, multi-question decomposition, and HyDE-style hypothetical expansion
-- detect when the current request is ambiguous or too conversational for tool calls
-- rewrite it into a shorter, tool-friendly working query without adding new details
-- decompose bundled requests into smaller retrieval subquestions
-- run domain-specific retrieval tools
-- combine tool outputs into a final answer
+### Check health
 
-The prompt layer in [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) also supports:
+```bash
+curl http://127.0.0.1:8000/health
+```
 
-- few-shot prompt examples
-- XML-organized prompt sections
-- JSON or XML response schema instructions
-- static or dynamic context templates for different task types
-- request metadata and external data injection
-- short-term session memory for follow-up questions
-- relevant-history extraction from prior question/answer turns
-- internal step-by-step reasoning guidance without exposing chain-of-thought
+### Generate an answer
 
-The current prompt flow is designed to:
+```bash
+curl -X POST http://127.0.0.1:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is a RAG pipeline?",
+    "top_k": 3,
+    "retrieval_mode": "bm25",
+    "expand_query": true,
+    "rewrite_question": false,
+    "multi_step": false
+  }'
+```
 
-- select a generic, customer-feedback, or technical-summary template based on the current query, or accept a preferred template from config
-- keep the full short-term memory window
-- separately surface only the most relevant historical question/answer pairs for the current turn
-- use historical answers only when they remain consistent with retrieved evidence
+## Optional Rich Local Setup
 
-### Optional LangChain + FAISS + local HF setup
-
-Install these if you want the richer local retrieval and inference stack:
+Install these packages if you want the richer local retrieval and inference stack:
 
 ```bash
 pip install fastapi uvicorn pydantic numpy \
@@ -145,9 +194,7 @@ pip install fastapi uvicorn pydantic numpy \
 
 Python 3.10+ is recommended.
 
-## Local Data
-
-The optional LangChain pipeline expects markdown files under `./data/`:
+Add markdown files under `./data/`:
 
 ```text
 data/
@@ -156,33 +203,26 @@ data/
 └── ...
 ```
 
-If `./data/` is missing, empty, or the optional dependencies are unavailable, the application will fall back to the toy dataset and toy retriever path.
-
-## Run The API
-
-From the repository root:
-
-```bash
-uvicorn serving:app --reload
-```
-
-Endpoints:
-
-- `GET /health`
-- `POST /generate`
+If the optional packages are missing, or `./data/` is absent or empty, the app will continue running on the fallback path.
 
 ## API
 
 ### `GET /health`
 
-Returns basic service metadata:
+Returns a small snapshot of system state, including:
 
-- status
+- service status
+- current runtime mode: `rich` or `fallback`
 - number of source documents
 - number of indexed chunks
 - deployment metadata
-- available retrieval modes
-- whether multi-step querying is available in the current runtime
+- supported retrieval modes
+- whether multi-step execution is available
+- gateway engine types
+
+### `GET /stats`
+
+Returns gateway usage stats such as request counts, engine selection counts, and lightweight validation counts.
 
 ### `POST /generate`
 
@@ -191,6 +231,7 @@ Request body:
 ```json
 {
   "query": "What is a RAG pipeline?",
+  "model": "auto",
   "top_k": 2,
   "retrieval_mode": "dense",
   "expand_query": false,
@@ -201,27 +242,17 @@ Request body:
 
 Request fields:
 
-- `query`: user query
-- `top_k`: number of chunks to retrieve, validated in the API layer and currently limited to `1..20`
-- `retrieval_mode`: one of `dense`, `bm25`, or `hnsw`
-- `expand_query`: whether to run synonym-based query expansion
-- `rewrite_question`: whether to rewrite the query before retrieval
-- `multi_step`: whether to run the multi-step inference agent instead of the standard retrieval flow
+- `query`: the user question
+- `model`: `auto`, `fast`, `balanced`, or `premium`
+- `top_k`: number of retrieved chunks, validated to `1..20`
+- `retrieval_mode`: `dense`, `bm25`, or `hnsw`
+- `expand_query`: whether to use query expansion
+- `rewrite_question`: whether to rewrite the query before retrieval when supported
+- `multi_step`: whether to prefer the multi-step path
 
-Example standard retrieval request:
+Response fields also include:
 
-```bash
-curl -X POST http://127.0.0.1:8000/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query":"What is a rag pipeline?",
-    "top_k": 3,
-    "retrieval_mode":"bm25",
-    "expand_query": true,
-    "rewrite_question": true,
-    "multi_step": false
-  }'
-```
+- `validation`: a lightweight grounding summary with `grounded`, `confidence`, overlap scores, warnings, and a short summary
 
 Example multi-step request:
 
@@ -229,7 +260,8 @@ Example multi-step request:
 curl -X POST http://127.0.0.1:8000/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "query":"I want somewhere good for kids and maybe food nearby.",
+    "query": "I want somewhere good for kids and maybe food nearby.",
+    "model": "premium",
     "multi_step": true
   }'
 ```
@@ -238,106 +270,59 @@ Example response shape:
 
 ```json
 {
-  "query": "What is a rag pipeline?",
-  "rewritten_query": "What is retrieval augmented generation pipeline?",
-  "retrieval_mode": "bm25",
-  "expand_query": true,
-  "rewrite_question": true,
+  "query": "What is a RAG pipeline?",
+  "rewritten_query": null,
+  "model": "auto",
+  "selected_model": "rag-query-engine",
+  "selected_engine": "balanced",
+  "selected_tier": "Balanced",
+  "retrieval_mode": "dense",
+  "expand_query": false,
+  "rewrite_question": false,
   "multi_step": false,
   "retrieved_context": [
-    "How retrieval augmented generation works.",
-    "Example RAG pipeline with embeddings and vector DB."
+    "How retrieval augmented generation works."
   ],
+  "validation": {
+    "grounded": true,
+    "confidence": "medium",
+    "answer_context_overlap": 0.32,
+    "query_context_overlap": 0.5,
+    "warnings": [],
+    "summary": "The answer appears reasonably grounded in the retrieved context."
+  },
   "response": "..."
 }
 ```
 
-## LangChain / HF Flow
+## Evaluation And Training Utilities
 
-The optional richer path uses the following sequence:
+This repo also includes supporting pieces that make it useful for demos and interviews:
 
-1. load markdown documents with `DirectoryLoader`
-2. split them with `RecursiveCharacterTextSplitter`
-3. build embeddings with `HuggingFaceEmbeddings`
-4. create a FAISS vector store
-5. build a BM25 retriever over the same chunk set
-6. load a local Hugging Face text-generation model
-7. fuse vector and lexical results through a multi-path retriever
-8. rerank the fused candidates with the local LLM
-9. build a question rewrite chain for retrieval
-10. build a RAG chain
-11. build a query engine for retrieve -> rerank -> answer
-12. build a multi-step inference agent with query rewrite, multi-question decomposition, HyDE-style disambiguation, and domain tools
+- `EvaluationTracker` logs requests and response previews in memory
+- evaluation helpers support recall-style retrieval checks and judge-based evaluation
+- training utilities simulate fine-tuning, experiment tracking, and model registration
 
-This lets the project move beyond the toy embedder and toy vector store while also supporting richer inference behavior.
+These pieces are intentionally lightweight, but they show where those concerns belong in a larger system.
 
-## Evaluation
+## Limitations
 
-[evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) now includes:
+Some important things are simplified on purpose:
 
-- runtime request logging with `EvaluationTracker` and a backward-compatible `Monitor` alias
-- bounded in-memory evaluation history to avoid unbounded growth in long-running sessions
-- evaluation examples and datasets
-- Recall@K utilities
-- judge-chain construction
-- answer judging
-- end-to-end dataset evaluation with `RAGEvaluator`
-- optional RAGAS-based evaluation with `RagasEvaluator`
-- retrieval-method comparison utilities with `RetrievalMethodComparison`
-- chunking-strategy experiments with `ChunkingStrategyEvaluator`
+- the fallback database is in memory only
+- the fallback model path is a placeholder object, not a real trained model
+- deployment is simulated
+- evaluation history is stored in process memory only
+- the `hnsw` path is educational, not production ANN infrastructure
+- the richer runtime depends on optional local packages and local model availability
+- query rewriting and multi-step behavior are prompt-driven and only as good as the underlying local model
 
-## Current Limitations
+## Good Entry Points
 
-Some parts are intentionally simplified:
+If you are reading the repo for the first time, start here:
 
-- the fallback document store is in memory only
-- the fallback model is still a placeholder fine-tuned model object
-- the dynamic context-template selector currently uses lightweight keyword matching rather than a learned classifier
-- the `hnsw` retriever is an educational approximation, not a production ANN library
-- evaluation history is stored only in process memory
-- deployment metadata is simulated
-- multi-step querying depends on optional LangChain and LangGraph support
-- ambiguity handling is prompt-based, so rewrite quality depends on the local LLM
-- the LangChain path still uses lightweight adapters around retrievers and models
-- RAGAS evaluation is optional and requires extra packages plus an appropriate evaluation LLM setup
-- retrieval-method comparison utilities also require `sentence-transformers`, `scikit-learn`, `numpy`, and `torch`
-- chunking-strategy experiments also require `langchain-openai` and suitable API credentials
-
-## Recent Improvements
-
-The codebase has been refactored to be easier to extend:
-
-- removed import-time demo execution from modules
-- centralized app assembly in [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py)
-- cached the initialized system in [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py)
-- added three retrieval modes: `dense`, `bm25`, and `hnsw`
-- added hybrid multi-path retrieval for the LangChain-backed path
-- added query-engine reranking with an optional cross-encoder stage
-- improved LangChain retrieval so API `top_k` is honored consistently
-- removed redundant embedding initialization during rich-stack startup
-- added query expansion
-- added question rewriting
-- moved multi-step agent behavior into [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py)
-- added ambiguity-first query rewriting for tool-friendly multi-step planning
-- clarified the three query-understanding strategies: rewrite, multi-question decomposition, and HyDE
-- refactored the inference and runtime setup around dedicated classes for query understanding, tool execution, and rich-runtime assembly
-- added optional LangChain, FAISS, local Hugging Face, and LangGraph integration
-- renamed the evaluation module to [evaluation.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/evaluation.py) and kept [monitoring.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/monitoring.py) as a compatibility shim
-- added an optional RAGAS-style evaluation path for answer/context quality metrics
-- kept a graceful fallback path for minimal environments
-
-## Quick Start For Developers
-
-Inspect the assembled system in Python:
-
-```python
-from rag_system import build_rag_system
-
-system = build_rag_system()
-print(type(system.retrieval_client).__name__)
-print(system.rewrite_chain is not None)
-print(system.multi_step_agent is not None)
-print(system.deployment_info)
-```
-
-If the optional dependencies are installed and `./data/` is populated, the system will prefer the LangChain-backed path. Otherwise it will use the toy retrieval pipeline.
+1. [serving.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/serving.py) to see the API surface
+2. [rag_system.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/rag_system.py) to understand startup and fallback behavior
+3. [llm_gateway.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/llm_gateway.py) to see how requests are routed
+4. [retriever.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/retriever.py) and [feature_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/feature_pipeline.py) for retrieval details
+5. [Inference_pipeline.py](/Users/linghuang/Git/ML-System-Design/sampled-ml-code/rag/Inference_pipeline.py) for prompt and agent logic

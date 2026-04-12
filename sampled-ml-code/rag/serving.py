@@ -27,6 +27,7 @@ def _build_response_payload(
     query: str,
     response: str,
     retrieved_context: list[str],
+    validation: dict | None,
     multi_step: bool,
     selected_model: str | None = None,
     selected_engine: str | None = None,
@@ -44,6 +45,7 @@ def _build_response_payload(
         "rewrite_question": req.rewrite_question,
         "multi_step": multi_step,
         "retrieved_context": retrieved_context,
+        "validation": validation,
         "response": response,
     }
 
@@ -74,6 +76,7 @@ def healthcheck() -> dict:
     gateway = get_gateway()
     return {
         "status": "ok",
+        "runtime_mode": system.runtime_mode,
         "documents": len(system.db.find_all()),
         "chunks": _count_chunks(system),
         "deployment": system.deployment_info,
@@ -106,13 +109,20 @@ def generate(req: QueryRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    system.evaluator.record_run(result.query, result.retrieved, result.response)
+    system.evaluator.record_run(
+        result.query,
+        result.retrieved,
+        result.response,
+        validation=result.validation.to_dict() if result.validation is not None else None,
+        engine=result.engine.name,
+    )
 
     return _build_response_payload(
         req=req,
         query=result.query,
         response=result.response,
         retrieved_context=result.retrieved_context,
+        validation=result.validation.to_dict() if result.validation is not None else None,
         multi_step=result.used_multi_step,
         selected_model=result.selected_model,
         selected_engine=result.engine.name,
