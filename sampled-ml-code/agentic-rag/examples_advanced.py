@@ -6,14 +6,14 @@ and comprehensive performance monitoring.
 
 from agentic_rag import UserRequest, build_workflow
 from agentic_rag.tools import BaseToolAgent
-from agentic_rag.schema import TaskNode, TaskType, TaskStatus, PerformanceMetrics
+from agentic_rag.schema import PerformanceMetrics, TaskNode, TaskStatus, ToolType
 
 
 class CustomAnalysisAgent(BaseToolAgent):
     """Example custom tool agent with performance tracking."""
 
     def __init__(self):
-        super().__init__("custom_analyzer")
+        super().__init__("custom_analyzer", ToolType.ANALYSIS)
 
     def _execute_core(self, params: dict) -> str:
         """Execute custom analysis logic."""
@@ -113,57 +113,61 @@ def example_task_node_creation():
     # Create retrieval task
     retrieval_task = TaskNode(
         task_id="task_retrieve_docs",
-        task_type=TaskType.RETRIEVAL,
-        description="Retrieve relevant documents",
+        tool_name="retrieve_user_docs",
+        tool_type=ToolType.DATA_RETRIEVAL,
         params={"query": "refund policy", "top_k": 3},
         dependencies=[],
         priority=1,
+        max_retries=3,
+        timeout=30.0,
         is_critical=True,  # This is critical - fail fast if it fails
-        max_retries=3
     )
 
     # Create planning task that depends on retrieval
     planning_task = TaskNode(
         task_id="task_plan",
-        task_type=TaskType.PLANNING,
-        description="Create execution plan",
+        tool_name="planner_agent",
+        tool_type=ToolType.ANALYSIS,
         params={"include_tools": True},
         dependencies=["task_retrieve_docs"],  # Depends on retrieval
         priority=2,
+        max_retries=2,
+        timeout=30.0,
         is_critical=True,
-        max_retries=2
     )
 
     # Create tool execution task that depends on planning
     tool_task = TaskNode(
         task_id="task_execute_tools",
-        task_type=TaskType.TOOL_EXECUTION,
-        description="Execute required tools",
+        tool_name="tool_executor",
+        tool_type=ToolType.GENERATION,
         params={"timeout": 10},
         dependencies=["task_plan"],  # Depends on plan
         priority=3,
+        max_retries=2,
+        timeout=10.0,
         is_critical=False,  # Non-critical - can degrade
-        max_retries=2
     )
 
     # Create response generation task that depends on everything
     response_task = TaskNode(
         task_id="task_generate_response",
-        task_type=TaskType.RESPONSE_GENERATION,
-        description="Generate final response",
+        tool_name="response_generator",
+        tool_type=ToolType.GENERATION,
         params={},
         dependencies=["task_retrieve_docs", "task_plan", "task_execute_tools"],
         priority=4,
+        max_retries=1,
+        timeout=30.0,
         is_critical=True,
-        max_retries=1
     )
 
     print("\n✓ Task DAG created with dependencies:")
     tasks = [retrieval_task, planning_task, tool_task, response_task]
     for task in tasks:
         deps_str = f" (depends on {', '.join(task.dependencies)})" if task.dependencies else ""
-        print(f"  {task.task_id}: {task.description}{deps_str}")
-        print(f"    - Priority: {task.priority}, Critical: {task.is_critical}")
+        print(f"  {task.task_id}: {task.tool_name}{deps_str}")
+        print(f"    - Type: {task.tool_type.value}, Priority: {task.priority}, Critical: {task.is_critical}")
 
 
 def example_custom_tool_agent():

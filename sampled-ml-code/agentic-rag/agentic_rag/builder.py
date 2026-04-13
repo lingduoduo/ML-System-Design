@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from .approval import HumanApprovalService
+from .config import (
+    ENABLE_GUMBEL_TOOL_SELECTION,
+    GUMBEL_TOOL_HARD,
+    GUMBEL_TOOL_TEMPERATURE,
+    TOOL_SELECTOR_MODEL_PATH,
+)
 from .gateway import Gateway
 from .memory import MemoryStore
 from .observability import TraceLogger
@@ -9,7 +15,7 @@ from .qa import QAAgent
 from .reflection import ReflectionModel
 from .retrieval import Reranker, RetrievalModel
 from .router import LabelingModel, RouterAgent
-from .tool_selection import ToolSelectionModel
+from .tool_selection import ToolSelectionModel, load_model
 from .tools import build_tool_registry
 from .workflow import AgentWorkflow
 
@@ -18,7 +24,15 @@ def build_workflow() -> AgentWorkflow:
     gateway = Gateway(rate_limit_per_user=100)
     memory_store = MemoryStore()
     router_agent = RouterAgent(labeling_model=LabelingModel())
-    planner_agent = ReturnPlannerAgent(tool_selector=ToolSelectionModel())
+    trained_selector = load_model(TOOL_SELECTOR_MODEL_PATH) if TOOL_SELECTOR_MODEL_PATH else None
+    planner_agent = ReturnPlannerAgent(
+        tool_selector=ToolSelectionModel(
+            enable_gumbel=ENABLE_GUMBEL_TOOL_SELECTION,
+            temperature=GUMBEL_TOOL_TEMPERATURE,
+            hard=GUMBEL_TOOL_HARD,
+            trained_selector=trained_selector,
+        )
+    )
     qa_agent = QAAgent()
     reflection_model = ReflectionModel()
     human_approval = HumanApprovalService()

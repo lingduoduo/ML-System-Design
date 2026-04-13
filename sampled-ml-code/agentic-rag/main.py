@@ -25,6 +25,11 @@ def _print_state(index: int, query: str, state) -> None:
     print("=" * 80)
 
 
+def _print_workflow_summary(workflow) -> None:
+    print(f"Performance stats: {workflow.get_performance_stats()}")
+    print(f"Monitoring summary: {workflow.get_monitoring_metrics()}")
+
+
 async def main_async() -> None:
     workflow = build_workflow()
     print("Running async version for better performance...")
@@ -41,7 +46,7 @@ async def main_async() -> None:
 
     elapsed = time.perf_counter() - start_time
     print(f"Elapsed: {elapsed:.2f}s")
-    print(f"Performance stats: {workflow.get_performance_stats()}")
+    _print_workflow_summary(workflow)
 
 
 def main_sync() -> None:
@@ -60,7 +65,7 @@ def main_sync() -> None:
 
     elapsed = time.perf_counter() - start_time
     print(f"Elapsed: {elapsed:.2f}s")
-    print(f"Performance stats: {workflow.get_performance_stats()}")
+    _print_workflow_summary(workflow)
 
 
 if __name__ == "__main__":

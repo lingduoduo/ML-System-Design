@@ -87,8 +87,15 @@ class TaskStatus(Enum):
     RETRYING = "retrying"
 
 
+class ToolType(Enum):
+    """High-level tool category."""
+    DATA_RETRIEVAL = "data_retrieval"
+    ANALYSIS = "analysis"
+    GENERATION = "generation"
+
+
 class TaskType(Enum):
-    """Task execution type."""
+    """Execution task type kept for orchestration compatibility."""
     RETRIEVAL = "retrieval"
     ROUTING = "routing"
     PLANNING = "planning"
@@ -96,35 +103,31 @@ class TaskType(Enum):
     RESPONSE_GENERATION = "response_generation"
 
 
-@dataclass(slots=True)
+@dataclass
 class PerformanceMetrics:
-    """Task performance metrics."""
     execution_time: float
-    cost_estimate: float = 0.0
-    memory_usage: float = 0.0
-    success_rate: float = 1.0
+    cost_estimate: float
+    memory_usage: float
+    success_rate: float
 
 
 @dataclass(slots=True)
 class TaskNode:
-    """Execution task with dependencies."""
     task_id: str
-    task_type: TaskType
-    description: str
-    params: Dict[str, Any] = field(default_factory=dict)
-    dependencies: List[str] = field(default_factory=list)
-    priority: int = 1
-    max_retries: int = 2
-    timeout: float = 30.0
-    is_critical: bool = False
+    tool_name: str
+    tool_type: ToolType
+    params: Dict[str, Any]
+    dependencies: List[str]
+    priority: int
+    max_retries: int
+    timeout: float
+    is_critical: bool
     status: TaskStatus = TaskStatus.PENDING
-    retry_count: int = 0
-    result: Optional[Any] = None
+    result: Optional["ToolExecutionResult"] = None
 
 
 @dataclass(slots=True)
 class ToolExecutionResult:
-    """Tool execution result with metrics."""
     tool_name: str
     status: TaskStatus
     result: Any

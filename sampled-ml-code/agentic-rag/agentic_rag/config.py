@@ -26,6 +26,10 @@ except ImportError:
 CACHE_SIZE = 1000
 RESPONSE_CACHE_SIZE = 256
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
 # Advanced optimization settings
 try:
     import numpy as np
@@ -36,9 +40,17 @@ except ImportError:
 
 try:
     import torch
+    TORCH_INSTALLED = True
     TORCH_AVAILABLE = torch.cuda.is_available()
 except ImportError:
+    torch = None
+    TORCH_INSTALLED = False
     TORCH_AVAILABLE = False
+
+ENABLE_GUMBEL_TOOL_SELECTION = _env_flag("ENABLE_GUMBEL_TOOL_SELECTION", default=False)
+GUMBEL_TOOL_TEMPERATURE = float(os.getenv("GUMBEL_TOOL_TEMPERATURE", "0.5"))
+GUMBEL_TOOL_HARD = _env_flag("GUMBEL_TOOL_HARD", default=True)
+TOOL_SELECTOR_MODEL_PATH = os.getenv("TOOL_SELECTOR_MODEL_PATH", "").strip() or None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
