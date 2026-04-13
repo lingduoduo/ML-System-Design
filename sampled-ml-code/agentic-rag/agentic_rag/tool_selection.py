@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 import re
 from typing import List, Optional, Sequence
@@ -23,16 +24,20 @@ class ToolCandidate:
     score: float
 
 
-DEFAULT_TRAINABLE_TOOL_NAMES = [
+DEFAULT_TRAINABLE_TOOL_NAMES = (
     "search_orders",
     "create_ticket",
     "summarize_user_docs",
     "summarize_policy_docs",
-]
+)
 
 
 class GumbelSoftmaxToolSelector(nn.Module):
     def forward(self, logits: torch.Tensor, tau: float = 0.5, hard: bool = True) -> torch.Tensor:
+        # Gumbel-Softmax sampling:
+        # 1. Add Gumbel noise to the logits.
+        # 2. Apply softmax to the noisy logits scaled by temperature.
+        # 3. Higher tau increases exploration; lower tau sharpens choices.
         return F.gumbel_softmax(logits, tau=tau, hard=hard, dim=-1)
 
 
@@ -40,6 +45,7 @@ class TrainableToolSelector(nn.Module):
     def __init__(self, tool_names: Sequence[str] | None = None, input_dim: int = 64):
         super().__init__()
         self.tool_names = list(tool_names or DEFAULT_TRAINABLE_TOOL_NAMES)
+        self.tool_name_to_index = {tool_name: idx for idx, tool_name in enumerate(self.tool_names)}
         self.input_dim = input_dim
         self.model = nn.Sequential(
             nn.Linear(input_dim, 64),
@@ -53,7 +59,7 @@ class TrainableToolSelector(nn.Module):
         return y_soft, logits
 
     def predict(self, x: torch.Tensor) -> tuple[int, torch.Tensor]:
-        with torch.no_grad():
+        with torch.inference_mode():
             _, logits = self.forward(x)
             return torch.argmax(logits, dim=-1).item(), logits[0]
 
@@ -74,6 +80,9 @@ class ToolSelectionModel:
         self.trained_selector = trained_selector
         if self.trained_selector is not None:
             self.trained_selector.eval()
+            self._trained_tool_name_to_index = dict(self.trained_selector.tool_name_to_index)
+        else:
+            self._trained_tool_name_to_index = {}
 
     def choose_tool(self, message: str) -> Optional[ToolCall]:
         candidates = self._score_candidates(message)
@@ -110,17 +119,27 @@ class ToolSelectionModel:
     def _choose_with_trained_selector(self, candidates: List[ToolCandidate], message: str) -> int:
         assert self.trained_selector is not None
 
-        with torch.no_grad():
-            _, logits = self.trained_selector(encode_query(message, input_dim=self.trained_selector.input_dim))
+        with torch.inference_mode():
+            _, logits = self.trained_selector(
+                encode_query(message, input_dim=self.trained_selector.input_dim)
+            )
 
-        tool_to_logit = {
-            tool_name: logits[0, idx].item()
-            for idx, tool_name in enumerate(self.trained_selector.tool_names)
-        }
-        candidate_logits = torch.tensor(
-            [[tool_to_logit.get(candidate.tool_call.tool_name, float("-inf")) for candidate in candidates]],
-            dtype=torch.float32,
-        )
+        candidate_indices = [
+            self._trained_tool_name_to_index.get(candidate.tool_call.tool_name, -1)
+            for candidate in candidates
+        ]
+        candidate_logits = logits.new_full((1, len(candidates)), float("-inf"))
+        valid_positions = [
+            (position, tool_index)
+            for position, tool_index in enumerate(candidate_indices)
+            if tool_index >= 0
+        ]
+        if valid_positions:
+            positions = torch.tensor([position for position, _ in valid_positions], dtype=torch.long)
+            tool_indices = torch.tensor([tool_index for _, tool_index in valid_positions], dtype=torch.long)
+            candidate_logits[0, positions] = logits[0, tool_indices]
+        else:
+            return max(range(len(candidates)), key=lambda idx: candidates[idx].score)
 
         if self.enable_gumbel:
             sampled = self.gumbel_selector.forward(candidate_logits, tau=self.temperature, hard=self.hard)
@@ -210,15 +229,22 @@ class ToolSelectionModel:
             return match.group(0).upper()
         return "ORD-001"
 
-def encode_query(query: str, input_dim: int = 64) -> torch.Tensor:
-    features = torch.zeros((1, input_dim), dtype=torch.float32)
-    for token in TOKEN_PATTERN.findall(query.lower()):
-        features[0, hash(token) % input_dim] += 1.0
 
-    norm = torch.norm(features, p=2)
-    if norm.item() > 0:
-        features = features / norm
-    return features
+@lru_cache(maxsize=2048)
+def _encode_query_cached(query: str, input_dim: int) -> tuple[float, ...]:
+    features = [0.0] * input_dim
+    for token in TOKEN_PATTERN.findall(query.lower()):
+        features[hash(token) % input_dim] += 1.0
+
+    norm = sum(value * value for value in features) ** 0.5
+    if norm > 0:
+        return tuple(value / norm for value in features)
+    return tuple(features)
+
+
+def encode_query(query: str, input_dim: int = 64) -> torch.Tensor:
+    encoded = _encode_query_cached(query, input_dim)
+    return torch.tensor(encoded, dtype=torch.float32).unsqueeze(0)
 
 
 def train_model(
@@ -234,6 +260,7 @@ def train_model(
 
     selector = TrainableToolSelector(tool_names=tool_names, input_dim=input_dim)
     optimizer = torch.optim.Adam(selector.parameters(), lr=learning_rate)
+    tool_name_to_index = selector.tool_name_to_index
 
     print("\nPrediction before training:")
     test_query = train_data[0][0]
@@ -247,13 +274,13 @@ def train_model(
         tau = max(0.5, 1.0 - epoch * 0.1)
 
         for step, (query, target_tool) in enumerate(train_data):
-            if target_tool not in selector.tool_names:
+            tool_idx = tool_name_to_index.get(target_tool)
+            if tool_idx is None:
                 raise ValueError(f"Unknown target tool '{target_tool}'")
 
             x = encode_query(query, input_dim=input_dim)
             _, logits = selector(x, tau=tau)
 
-            tool_idx = selector.tool_names.index(target_tool)
             target_index = torch.tensor([tool_idx], dtype=torch.long)
             loss = F.cross_entropy(logits, target_index)
 

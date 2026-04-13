@@ -1,26 +1,17 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-try:
-    from dotenv import load_dotenv
+from dotenv import load_dotenv
 
-    load_dotenv()
-except ImportError:
-    pass
+load_dotenv()
 
-try:
-    from langchain_core.prompts import PromptTemplate
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-    LANGCHAIN_AVAILABLE = True
-except ImportError:
-    PromptTemplate = None
-    ChatOpenAI = None
-    OpenAIEmbeddings = None
-    LANGCHAIN_AVAILABLE = False
+from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 # Performance settings
 CACHE_SIZE = 1000
@@ -31,21 +22,14 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 # Advanced optimization settings
-try:
-    import numpy as np
-    NUMPY_AVAILABLE = True
-except ImportError:
-    np = None
-    NUMPY_AVAILABLE = False
+import numpy as np
+NUMPY_AVAILABLE = True
 
-try:
-    import torch
-    TORCH_INSTALLED = True
-    TORCH_AVAILABLE = torch.cuda.is_available()
-except ImportError:
-    torch = None
-    TORCH_INSTALLED = False
-    TORCH_AVAILABLE = False
+
+import torch
+TORCH_INSTALLED = True
+TORCH_AVAILABLE = torch.cuda.is_available()
+
 
 ENABLE_GUMBEL_TOOL_SELECTION = _env_flag("ENABLE_GUMBEL_TOOL_SELECTION", default=False)
 GUMBEL_TOOL_TEMPERATURE = float(os.getenv("GUMBEL_TOOL_TEMPERATURE", "0.5"))
@@ -69,7 +53,7 @@ DOCUMENT_LABELS = {
     "policy_docs": "refund policy",
 }
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 API_BASE = os.getenv("OPENAI_BASE_URL", "").strip() or None
 
 
@@ -81,48 +65,61 @@ def sanity_check_openai_compatible(candidate_llm: Any, candidate_embeddings: Any
     print(f"[LangChain] Embeddings OK. dim = {len(embedding_vector)}")
 
 
-llm = None
-embeddings = None
-if LANGCHAIN_AVAILABLE and openai_api_key:
+@lru_cache(maxsize=1)
+def get_llm() -> Any:
+    if not OPENAI_API_KEY:
+        return None
+
     llm_kwargs = {
-        "api_key": openai_api_key,
+        "api_key": OPENAI_API_KEY,
         "model": "gpt-3.5-turbo",
         "temperature": 0,
     }
+    if API_BASE:
+        llm_kwargs["base_url"] = API_BASE
+    return ChatOpenAI(**llm_kwargs)
+
+
+@lru_cache(maxsize=1)
+def get_embeddings() -> Any:
+    if not OPENAI_API_KEY:
+        return None
+
     emb_kwargs = {
-        "api_key": openai_api_key,
+        "api_key": OPENAI_API_KEY,
         "model": "text-embedding-3-small",
     }
     if API_BASE:
-        llm_kwargs["base_url"] = API_BASE
         emb_kwargs["base_url"] = API_BASE
+    return OpenAIEmbeddings(**emb_kwargs)
 
-    llm = ChatOpenAI(**llm_kwargs)
-    embeddings = OpenAIEmbeddings(**emb_kwargs)
+
+@lru_cache(maxsize=1)
+def get_openai_clients() -> tuple[Any, Any]:
+    llm = get_llm()
+    embeddings = get_embeddings()
+    if llm is None or embeddings is None:
+        return None, None
 
     try:
         sanity_check_openai_compatible(llm, embeddings)
     except Exception as exc:
         print(f"[LangChain] Setup failed: {exc}")
-        llm = None
-        embeddings = None
+        return None, None
+    return llm, embeddings
 
-if LANGCHAIN_AVAILABLE and PromptTemplate is not None:
-    MAP_PROMPT = PromptTemplate.from_template(
-        "You are summarizing a support document chunk.\n"
-        "Document: {doc_name}\n"
-        "Chunk:\n{chunk}\n\n"
-        "Write a concise, factual summary focused on user-relevant details:"
-    )
-    REDUCE_PROMPT = PromptTemplate.from_template(
-        "You are writing a final summary from chunk summaries.\n"
-        "Document: {doc_name}\n"
-        "Chunk summaries:\n{summaries}\n\n"
-        "Write a coherent high-level summary grounded only in the chunk summaries:"
-    )
-else:
-    MAP_PROMPT = None
-    REDUCE_PROMPT = None
+MAP_PROMPT = PromptTemplate.from_template(
+    "You are summarizing a support document chunk.\n"
+    "Document: {doc_name}\n"
+    "Chunk:\n{chunk}\n\n"
+    "Write a concise, factual summary focused on user-relevant details:"
+)
+REDUCE_PROMPT = PromptTemplate.from_template(
+    "You are writing a final summary from chunk summaries.\n"
+    "Document: {doc_name}\n"
+    "Chunk summaries:\n{summaries}\n\n"
+    "Write a coherent high-level summary grounded only in the chunk summaries:"
+)
 
 # Numba availability - set to False to avoid import issues on some systems
 NUMBA_AVAILABLE = False

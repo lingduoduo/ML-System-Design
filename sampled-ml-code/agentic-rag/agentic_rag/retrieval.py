@@ -6,28 +6,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, List, Sequence
 
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from .config import (
     CACHE_SIZE,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DOCUMENT_FILES,
     DOCUMENT_LABELS,
-    LANGCHAIN_AVAILABLE,
     MAP_PROMPT,
     REDUCE_PROMPT,
-    embeddings,
-    llm,
+    get_openai_clients,
 )
 from .schema import RetrievedDocument
-
-try:
-    from langchain_community.document_loaders import TextLoader
-    from langchain_community.vectorstores import FAISS
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-except ImportError:
-    TextLoader = None
-    FAISS = None
-    RecursiveCharacterTextSplitter = None
 
 # Pre-compile regex patterns for performance
 PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
@@ -138,9 +131,6 @@ def load_and_split_txt(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> List[Any]:
-    if not LANGCHAIN_AVAILABLE or TextLoader is None or RecursiveCharacterTextSplitter is None:
-        return []
-
     loader = TextLoader(str(file_path), encoding="utf-8")
     docs = loader.load()
     for doc in docs:
@@ -158,7 +148,8 @@ def summarize_document(corpus_name: str, title: str) -> str:
     if not file_path or not file_path.exists():
         return f"No {title} available for summarization."
 
-    if LANGCHAIN_AVAILABLE and llm and MAP_PROMPT and REDUCE_PROMPT:
+    llm, _ = get_openai_clients()
+    if llm and MAP_PROMPT and REDUCE_PROMPT:
         try:
             chunks = load_and_split_txt(file_path, doc_name=title)
             chunk_summaries = [
@@ -208,7 +199,8 @@ class RetrievalModel:
             print(f"[Retrieval] Failed to read {self.corpus_name}: {exc}")
             return
 
-        if LANGCHAIN_AVAILABLE and embeddings and FAISS is not None:
+        _, embeddings = get_openai_clients()
+        if embeddings:
             try:
                 self.documents = load_and_split_txt(
                     file_path,
@@ -235,7 +227,7 @@ class RetrievalModel:
             print(f"[Retrieval] Loaded fallback chunks for {self.corpus_name}: {len(self.documents)}")
 
     def retrieve(self, query: str, top_k: int = 3) -> List[RetrievedDocument]:
-        if self.vector_store and LANGCHAIN_AVAILABLE:
+        if self.vector_store:
             try:
                 docs = self.vector_store.similarity_search_with_score(query, k=top_k)
                 return [
@@ -273,7 +265,7 @@ class RetrievalModel:
         if not queries:
             return []
 
-        if self.vector_store and LANGCHAIN_AVAILABLE:
+        if self.vector_store:
             try:
                 # Batch vector search
                 results = []

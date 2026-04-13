@@ -24,7 +24,12 @@ def build_workflow() -> AgentWorkflow:
     gateway = Gateway(rate_limit_per_user=100)
     memory_store = MemoryStore()
     router_agent = RouterAgent(labeling_model=LabelingModel())
-    trained_selector = load_model(TOOL_SELECTOR_MODEL_PATH) if TOOL_SELECTOR_MODEL_PATH else None
+    trained_selector = None
+    if TOOL_SELECTOR_MODEL_PATH:
+        try:
+            trained_selector = load_model(TOOL_SELECTOR_MODEL_PATH)
+        except FileNotFoundError:
+            print(f"[ToolSelector] Checkpoint not found: {TOOL_SELECTOR_MODEL_PATH}. Falling back to heuristic selector.")
     planner_agent = ReturnPlannerAgent(
         tool_selector=ToolSelectionModel(
             enable_gumbel=ENABLE_GUMBEL_TOOL_SELECTION,

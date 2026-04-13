@@ -74,91 +74,38 @@ class AgentWorkflow:
 
     def run(self, request: UserRequest) -> AgentState:
         start_time = time.perf_counter()
-
-        state = AgentState(request_id=str(uuid.uuid4()), user_request=request)
-        self.gateway.check(request)
-        self.logger.log(state, "gateway", {"status": "passed"})
+        state = self._initialize_state(request)
 
         if self._try_fill_from_cache(state):
-            response_time = time.perf_counter() - start_time
-            self._update_metrics_batch(cache_hit=True, response_time=response_time)
-            self.memory_store.save_turn(
-                user_id=request.user_id,
-                user_message=request.message,
-                assistant_message=state.final_response,
-            )
+            self._finalize_sync_request(state, start_time, cache_hit=True)
             return state
 
-        state.short_term_memory = self.memory_store.load_short_term(request.user_id)
-        state.long_term_memory = self.memory_store.load_long_term(request.user_id)
-        self.logger.log(
-            state,
-            "memory_loaded",
-            {
-                "short_term_count": len(state.short_term_memory),
-                "long_term_keys": list(state.long_term_memory.keys()),
-            },
-        )
+        self._load_memory_sync(state)
 
         route_decision = self.router_agent.route(request.message)
         self._log_route(state, route_decision)
         self._retrieve_context(state, route_decision)
         self._plan_and_execute(state, route_decision)
         self._draft_reflect_finalize(state)
-        self.memory_store.save_turn(
-            user_id=request.user_id,
-            user_message=request.message,
-            assistant_message=state.final_response,
-        )
-        response_time = time.perf_counter() - start_time
-        self._update_metrics_batch(response_time=response_time)
+        self._finalize_sync_request(state, start_time)
         return state
 
     async def run_async(self, request: UserRequest) -> AgentState:
         start_time = time.perf_counter()
-
-        state = AgentState(request_id=str(uuid.uuid4()), user_request=request)
-        self.gateway.check(request)
-        self.logger.log(state, "gateway", {"status": "passed"})
+        state = self._initialize_state(request)
 
         if self._try_fill_from_cache(state):
-            response_time = time.perf_counter() - start_time
-            self._update_metrics_batch(cache_hit=True, response_time=response_time)
-            await self.memory_store.save_turn_async(
-                user_id=request.user_id,
-                user_message=request.message,
-                assistant_message=state.final_response,
-            )
+            await self._finalize_async_request(state, start_time, cache_hit=True)
             return state
 
-        memory_tasks = await asyncio.gather(
-            self.memory_store.load_short_term_async(request.user_id),
-            self.memory_store.load_long_term_async(request.user_id),
-        )
-        state.short_term_memory = memory_tasks[0]
-        state.long_term_memory = memory_tasks[1]
-
-        self.logger.log(
-            state,
-            "memory_loaded",
-            {
-                "short_term_count": len(state.short_term_memory),
-                "long_term_keys": list(state.long_term_memory.keys()),
-            },
-        )
+        await self._load_memory_async(state)
 
         route_decision = self.router_agent.route(request.message)
         self._log_route(state, route_decision)
         await self._retrieve_context_async(state, route_decision)
         self._plan_and_execute(state, route_decision)
         self._draft_reflect_finalize(state)
-        await self.memory_store.save_turn_async(
-            user_id=request.user_id,
-            user_message=request.message,
-            assistant_message=state.final_response,
-        )
-        response_time = time.perf_counter() - start_time
-        self._update_metrics_batch(response_time=response_time)
+        await self._finalize_async_request(state, start_time)
         return state
 
     def _retrieve_documents(
@@ -249,18 +196,20 @@ class AgentWorkflow:
     def dynamic_dispatch(self, state: Dict[str, Any]) -> Optional[TaskNode]:
         task_dag = state.get("task_dag", [])
         completed_tasks = state.get("completed_tasks", {})
-        ready_tasks = [
-            task
-            for task in task_dag
-            if task.status in {TaskStatus.PENDING, TaskStatus.RETRYING}
-            and all(dep_id in completed_tasks for dep_id in task.dependencies)
-        ]
+        best_task: Optional[TaskNode] = None
+        best_key: Optional[tuple[int, float, str]] = None
+        for task in task_dag:
+            if task.status not in {TaskStatus.PENDING, TaskStatus.RETRYING}:
+                continue
+            if not all(dep_id in completed_tasks for dep_id in task.dependencies):
+                continue
 
-        if not ready_tasks:
-            return None
+            candidate_key = (task.priority, -task.timeout, task.task_id)
+            if best_key is None or candidate_key < best_key:
+                best_task = task
+                best_key = candidate_key
 
-        ready_tasks.sort(key=lambda task: (task.priority, -task.timeout, task.task_id))
-        return ready_tasks[0]
+        return best_task
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
         """Get comprehensive monitoring dashboard summary."""
@@ -279,6 +228,60 @@ class AgentWorkflow:
             else:
                 processed[key] = value
         return processed
+
+    def _initialize_state(self, request: UserRequest) -> AgentState:
+        state = AgentState(request_id=str(uuid.uuid4()), user_request=request)
+        self.gateway.check(request)
+        self.logger.log(state, "gateway", {"status": "passed"})
+        return state
+
+    def _log_memory_loaded(self, state: AgentState) -> None:
+        self.logger.log(
+            state,
+            "memory_loaded",
+            {
+                "short_term_count": len(state.short_term_memory),
+                "long_term_keys": list(state.long_term_memory.keys()),
+            },
+        )
+
+    def _load_memory_sync(self, state: AgentState) -> None:
+        request = state.user_request
+        state.short_term_memory = self.memory_store.load_short_term(request.user_id)
+        state.long_term_memory = self.memory_store.load_long_term(request.user_id)
+        self._log_memory_loaded(state)
+
+    async def _load_memory_async(self, state: AgentState) -> None:
+        request = state.user_request
+        state.short_term_memory, state.long_term_memory = await asyncio.gather(
+            self.memory_store.load_short_term_async(request.user_id),
+            self.memory_store.load_long_term_async(request.user_id),
+        )
+        self._log_memory_loaded(state)
+
+    def _finalize_sync_request(self, state: AgentState, start_time: float, *, cache_hit: bool = False) -> None:
+        request = state.user_request
+        self.memory_store.save_turn(
+            user_id=request.user_id,
+            user_message=request.message,
+            assistant_message=state.final_response,
+        )
+        self._update_metrics_batch(
+            cache_hit=cache_hit,
+            response_time=time.perf_counter() - start_time,
+        )
+
+    async def _finalize_async_request(self, state: AgentState, start_time: float, *, cache_hit: bool = False) -> None:
+        request = state.user_request
+        await self.memory_store.save_turn_async(
+            user_id=request.user_id,
+            user_message=request.message,
+            assistant_message=state.final_response,
+        )
+        self._update_metrics_batch(
+            cache_hit=cache_hit,
+            response_time=time.perf_counter() - start_time,
+        )
 
     def _try_fill_from_cache(self, state: AgentState) -> bool:
         dedupe_key = self.gateway.dedupe_key(state.user_request)

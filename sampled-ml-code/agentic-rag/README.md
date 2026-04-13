@@ -1,49 +1,22 @@
 # Agentic RAG System
 
-High-performance agentic RAG prototype with advanced orchestration patterns, task management, and comprehensive monitoring. Designed for enterprise customer-support workflows with intelligent routing, multi-agent coordination, and production-ready observability.
+Agentic RAG prototype for customer-support workflows. The system combines routing, retrieval, planning, tool execution, reflection, memory, and monitoring in a modular package. It supports simple RAG-style question answering, tool-driven workflows, retry-aware task execution, and an optional PyTorch-based tool selector with Gumbel-Softmax exploration.
 
-## Key Features
+## Highlights
 
-### 🏗️ Advanced Architecture
-- **Modular Design**: Router, planner, QA agent, reflection, memory, and workflow orchestrator
-- **Task-Based Execution**: DAG-based task orchestration with dependencies and priorities
-- **Multi-Agent Coordination**: Specialized agents for routing, planning, QA, and tool execution
-- **Flexible Routing**: Routes to general Q&A, policy Q&A, or complex tool workflows
+- Modular architecture: router, Q&A agent, planner, retrieval, memory, reflection, monitored tools, and workflow orchestration
+- Fast paths for simple queries: lightweight routing can skip planning when a direct answer is enough
+- Task-based execution: tool steps are executed through `TaskNode` dispatch with retries and early-exit handling
+- Retrieval options: lexical fallback by default, plus optional LangChain + FAISS support
+- Monitoring and observability: per-tool metrics, dashboard summaries, traces, and workflow-level performance stats
+- Optional learned tool selection: PyTorch selector training, checkpoint loading, and Gumbel-Softmax sampling
 
-### 🚀 Performance & Optimization
-- **High-Performance Retrieval**: Lexical fallback and optional vector search with FAISS
-- **Batch Processing**: Process multiple concurrent requests efficiently
-- **Async Support**: Full asynchronous processing with concurrent I/O
-- **Response Caching**: Intelligent deduplication and in-memory caching
-- **JIT Compilation**: Optional Numba acceleration for scoring functions
+## Built-in Tools
 
-### 📊 Enterprise Monitoring
-- **Comprehensive Metrics**: Track execution time, cost, memory, success rates per task
-- **Monitoring Dashboard**: Real-time system metrics and performance analytics
-- **Performance History**: Aggregate statistics across all executions
-- **Tool Metrics**: Per-tool success rates and performance tracking
-
-### 🔄 Reliability Features
-- **Retry Logic**: Intelligent retry handling based on task criticality
-- **Early Exit**: Stop execution if critical tasks fail
-- **Human Approval Gates**: Manual review for high-risk operations
-- **Graceful Degradation**: Fallback mechanisms for missing dependencies
-
-### ⚡ Performance Optimizations
-- **Memory Bounded**: Execution history uses deques with configurable limits
-- **Metric Caching**: O(1) metric lookups with intelligent cache invalidation
-- **Batch Operations**: Lock-free batching reduces contention by 15-25%
-- **Incremental Updates**: Dashboard scales to 1000+ tasks without degradation
-- **Slots Optimization**: 40-50% memory reduction via __slots__
-- **Precision Timers**: `perf_counter()` for accurate microsecond measurements
-
-See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance improvements.
-
-### 🛠️ Built-in Tools
-- `search_orders(order_id)` - Order status lookup
-- `create_ticket(issue, severity)` - Support ticket creation
-- `summarize_user_docs()` - Document summarization
-- `summarize_policy_docs()` - Policy document summaries
+- `search_orders(order_id)` for order status lookup
+- `create_ticket(issue, severity)` for support ticket creation
+- `summarize_user_docs()` for user-document summarization
+- `summarize_policy_docs()` for policy summarization
 
 ## Project Layout
 
@@ -76,13 +49,19 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance improvements.
 
 ## Setup
 
-Basic mode:
+Run the demo:
 
 ```bash
 python3 main.py
 ```
 
-Optional LangChain + vector retrieval mode:
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Optional LangChain + vector-retrieval extras:
 
 ```bash
 pip install python-dotenv langchain langchain-openai langchain-community faiss-cpu
@@ -93,67 +72,99 @@ Optional environment variables:
 ```bash
 export OPENAI_API_KEY=your_key_here
 export OPENAI_BASE_URL=https://your-compatible-endpoint.example.com
+export ENABLE_GUMBEL_TOOL_SELECTION=true
+export GUMBEL_TOOL_TEMPERATURE=0.5
+export GUMBEL_TOOL_HARD=true
+export TOOL_SELECTOR_MODEL_PATH=artifacts/tool_selector.pt
 ```
-
-## Runtime Behavior
-
-### Standard mode
-
-- Uses local fallback retrieval
-- Chunks and tokenizes the text files in `data/`
-- Scores chunks lexically without external services
-
-### Enhanced mode
-
-- Uses LangChain when installed and configured
-- Builds a FAISS vector store over the local documents
-- Uses LLM-backed summarization for document summary tools
 
 ## Architecture
 
 ### Router model
 
 - File: `agentic_rag/router.py`
+- Purpose: lightweight control policy for deciding whether to invoke planning, retrieval, direct answering, tool usage, or another agent path
 - Produces a structured `RouteDecision`
-- Decides whether a request should retrieve, plan, use tools, or go straight to Q&A
-- Simple policy Q&A can skip planning
+- In this repo, it decides whether a request should retrieve, plan, use tools, or go straight to Q&A
+- Design options include a prompt-based router, a small intent classifier, or hybrid rules plus model
+- Main cost benefit: simple requests skip the more expensive planner
 
 ### Q&A agent
 
 - File: `agentic_rag/qa.py`
+- Purpose: handle simple queries without requiring a multi-step tool workflow
+- Model pattern: LLM with RAG
 - Generates the final answer from memory, retrieved documents, and tool results
 
 ### Return planner agent
 
 - File: `agentic_rag/planner.py`
-- Builds a structured execution plan
-- Used for multi-step and tool-driven requests
+- Purpose: decompose the task, decide the action sequence, and choose between direct response, tool usage, or multi-step execution
+- Typical inputs: user request, order info, and policy context
+- Typical outputs: structured plans or function calls such as `check_eligibility` and `initiate_return`
+- Common implementation patterns: long-context LLM with function calling, optionally fine-tuned for planning traces
+- Reasoning styles can include CoT, ToT, ReAct, or structured JSON planning
+- In this repo, it builds the structured plan consumed by the workflow
 
 ### Tool selection model
 
 - File: `agentic_rag/tool_selection.py`
-- Chooses which tool to call from the current request
+- Purpose: choose the best tool or tool sequence for the current request
+- Supports deterministic heuristic scoring, Gumbel-Softmax sampling, and optional trained PyTorch selector checkpoints
+- Includes `train_model()`, `save_model()`, and `load_model()` helpers
+- Design options include ranking models, multi-label classifiers, or LLM function-calling policies
+- Useful features include query embeddings, tool-description embeddings, current plan step, and past success rate
+
+Gumbel-Softmax is used as the exploration mechanism for tool choice:
+
+1. Add Gumbel noise to the tool logits.
+2. Apply softmax to the noisy logits after scaling by temperature `tau`.
+3. Use `tau` to control exploration vs. exploitation.
+
+Higher `tau` makes the distribution more uniform and exploratory. Lower `tau` makes the distribution sharper and more deterministic.
 
 ### Retrieval model
 
 - File: `agentic_rag/retrieval.py`
+- Purpose: fetch relevant grounded knowledge for the active request
 - Loads, chunks, tokenizes, and retrieves from the local corpora
-- Supports both lexical fallback retrieval and optional vector retrieval
+- Supports lexical fallback retrieval by default and optional vector retrieval
+- Common components include query rewrite, dense retrieval, sparse retrieval, and reranking
+- Common architectures include embeddings plus a vector database, hybrid BM25 plus dense retrieval, and a cross-encoder reranker
 
 ### Reflection model
 
 - File: `agentic_rag/reflection.py`
+- Purpose: evaluate intermediate or final results, detect hallucination or execution failure, and decide whether to revise
 - Reviews the draft response for obvious issues before finalization
+- Common forms include LLM-as-a-judge, groundedness or quality classifiers, and rule-based validators
 
 ### Memory model
 
 - File: `agentic_rag/memory.py`
-- Stores short-term conversation history and long-term key-value memory
+- Purpose: decide what to store, retrieve, summarize, promote, or forget across interactions
+- Uses a hierarchical memory design:
+  - short-term conversation turns are kept in a bounded deque for immediate context
+  - vector memories are stored in a FAISS-backed short-term and long-term hierarchy
+  - a `MemoryRetriever` performs semantic lookup over that hierarchy
+- `MemoryTransformer` is the organizing layer for memory ingestion and querying
+- `MemoryTransformer.process(content)` computes an importance score and routes content into short-term or long-term storage
+- Higher-importance memories are promoted to long-term storage; lower-importance memories remain short-term unless promoted later
+- Stores short-term conversation history, long-term key-value memory, and semantic vector memories in one module
+- Possible components include summarization, memory retrieval, salience ranking, and memory promotion policies
 
 ### Orchestration
 
 - File: `agentic_rag/workflow.py`
 - Coordinates gateway checks, memory loading, routing, retrieval, planning, tool execution, reflection, caching, and final response assembly
+- In a multi-agent setting, this layer decides which agent to invoke, when to transfer control, and when to merge outputs
+- Typical agent roles can include planner, retrieval, code, review, and domain-specific agents
+
+### Modeling strategy: predefined vs dynamically orchestrated agents
+
+- Predefined agents use a fixed workflow graph with deterministic nodes; they are easier to debug and usually lower latency
+- Dynamically orchestrated agents let an LLM decide the next node at runtime; they are more flexible but higher latency and less predictable
+- This repo currently leans toward the predefined-agent approach
 
 ### Tool agents and monitoring
 
@@ -162,14 +173,24 @@ export OPENAI_BASE_URL=https://your-compatible-endpoint.example.com
 - Each tool execution can capture execution time, success rate, cost estimate, and memory estimate
 - The workflow aggregates these metrics into a monitoring dashboard
 
-## Advanced Features
+## Runtime Behavior
+
+- Standard mode uses local fallback retrieval over the text files in `data/`
+- Enhanced mode uses LangChain when installed and configured
+- Response caching deduplicates repeated requests in memory
+- Async mode overlaps memory and retrieval work where useful
+- Memory writes add both plain conversation turns and vectorized memories
+- Semantic memory retrieval uses `MemoryRetriever` over `MemoryStorage`
+- Short-term versus long-term vector placement is determined by memory importance
+
+## Examples
 
 ### Task-Based Orchestration
 
 The system uses a DAG-based task execution model for complex workflows:
 
 ```python
-from agentic_rag.schema import TaskNode, TaskStatus, ToolType
+from agentic_rag.schema import TaskNode, ToolType
 
 # Tasks are created with dependencies, priorities, and criticality
 task = TaskNode(
@@ -191,10 +212,11 @@ Create custom tool agents with built-in performance metrics:
 
 ```python
 from agentic_rag.tools import BaseToolAgent
+from agentic_rag.schema import ToolType
 
 class OrderLookupAgent(BaseToolAgent):
     def __init__(self):
-        super().__init__("order_lookup")
+        super().__init__("order_lookup", ToolType.DATA_RETRIEVAL)
     
     def _execute_core(self, params):
         order_id = params.get("order_id")
@@ -225,12 +247,48 @@ print(f"Total tasks: {dashboard['system_metrics']['total_tasks']}")
 print(f"Cost estimate: ${dashboard['system_metrics']['total_cost']:.4f}")
 ```
 
+### Trainable Tool Selector
+
+The tool selector can also be trained and loaded from checkpoints:
+
+```python
+from agentic_rag.tool_selection import train_model, save_model
+
+selector = train_model(
+    [
+        ("check status for order ORD-123", "search_orders"),
+        ("open a support ticket for my damaged order", "create_ticket"),
+        ("summarize the user documentation", "summarize_user_docs"),
+        ("summarize the refund policy", "summarize_policy_docs"),
+    ],
+    epochs=5,
+)
+
+save_model(selector, "artifacts/tool_selector.pt")
+```
+
+At runtime, set `TOOL_SELECTOR_MODEL_PATH` to load the checkpoint into the planner's `ToolSelectionModel`.
+
+### Memory Transformer
+
+The memory layer also includes a `MemoryTransformer` wrapper that organizes memory storage and retrieval:
+
+```python
+from agentic_rag.memory import MemoryTransformer
+
+memory = MemoryTransformer(short_limit=15, long_limit=100)
+
+memory.process("Important contract clause about exclusivity and termination.")
+results = memory.query("exclusivity clause", top_k=3)
+```
+
+`MemoryTransformer` computes an importance score for each content item. High-importance memories are routed into long-term FAISS storage, while lower-importance memories remain in short-term storage unless later promoted.
+
 ### Retry Logic & Early Exit
 
-The system includes intelligent retry handling:
-- Tasks marked `is_critical=True` trigger early exit on failure
+- Tasks marked `is_critical=True` can trigger early exit on failure
 - Non-critical tasks get fewer retries
-- Monitors error count and terminates if too many failures
+- The workflow also stops if error counts exceed a safety threshold
 
 ## Usage
 
@@ -302,6 +360,9 @@ asyncio.run(main())
 - Response caching uses a bounded LRU-style cache in the workflow
 - Async workflow mode runs memory and retrieval operations concurrently where useful
 - Performance stats are exposed via `workflow.get_performance_stats()`
+- Planned tool steps are executed through `TaskNode` dispatch with retry and early-exit support
+- Tool selection can combine heuristic candidate filtering with trained-model scoring when a checkpoint is provided
+- Memory search uses FAISS inner-product indexes when available and falls back cleanly when it is not
 
 ## Operational Notes
 
@@ -316,7 +377,3 @@ asyncio.run(main())
 - Update routing logic in `agentic_rag/router.py`
 - Extend planning behavior in `agentic_rag/planner.py`
 - Add new corpora in `agentic_rag/config.py` and `agentic_rag/retrieval.py`
-
-## Disclaimer
-
-This repository is shared for academic and research purposes. If any content should not be publicly shared, please contact me and I will review and remove it if needed.
