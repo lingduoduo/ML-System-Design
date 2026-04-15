@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from Inference_pipeline import AnswerValidationResult, validate_generated_answer
 from feature_pipeline import rewrite_question
+from rag_system import CRAGConfig, crag_query_sync, local_docs_sufficiency
 from retriever import documents_to_retrieval_results
 
 
@@ -221,28 +222,64 @@ class LLMGateway:
         selected_model: str,
         used_rewrite: bool,
     ) -> GatewayExecutionResult:
-        result = self.system.query_engine.run(
+        should_use_rag, retrieved_docs, relevance_labels = local_docs_sufficiency(
             query,
-            retrieve_top_k=top_k,
-            rerank_top_n=top_k,
-            request_metadata=self._build_request_metadata(
-                engine,
-                selected_model=selected_model,
-                used_rewrite=used_rewrite,
-            ),
+            self.system.query_engine.retriever,
+            self.system.query_engine.llm,
+            CRAGConfig(top_k=top_k),
         )
-        retrieved = documents_to_retrieval_results(result.documents, top_k=top_k)
-        retrieved_context = [doc.page_content for doc in result.documents]
+        if should_use_rag:
+            result = self.system.query_engine.run(
+                query,
+                retrieve_top_k=top_k,
+                rerank_top_n=top_k,
+                request_metadata=self._build_request_metadata(
+                    engine,
+                    selected_model=selected_model,
+                    used_rewrite=used_rewrite,
+                ),
+            )
+            retrieved = documents_to_retrieval_results(result.documents, top_k=top_k)
+            retrieved_context = [doc.page_content for doc in result.documents]
+            return GatewayExecutionResult(
+                engine=engine,
+                selected_model=selected_model,
+                query=query,
+                response=result.answer,
+                retrieved_context=retrieved_context,
+                retrieved=retrieved,
+                validation=self._validate_response(
+                    query=query,
+                    response=result.answer,
+                    retrieved_context=retrieved_context,
+                ),
+                used_rewrite=used_rewrite,
+                used_multi_step=False,
+            )
+
+        crag_retrieved = self._build_crag_retrieval_results(retrieved_docs, relevance_labels, top_k=top_k)
+        crag_result = crag_query_sync(
+            question=query,
+            vectorstore=self.system.query_engine.retriever,
+            cfg=CRAGConfig(top_k=top_k),
+            llm_answer=self.system.query_engine.llm,
+            llm_grader=self.system.query_engine.llm,
+            llm_rewrite=self.system.query_engine.llm,
+            tavily_tool=None,
+            retrieved_docs=retrieved_docs,
+            relevance_labels=relevance_labels,
+        )
+        retrieved_context = crag_result.get("relevant_local", []) + crag_result.get("web_snippets", [])
         return GatewayExecutionResult(
             engine=engine,
             selected_model=selected_model,
             query=query,
-            response=result.answer,
+            response=crag_result["final_answer"],
             retrieved_context=retrieved_context,
-            retrieved=retrieved,
+            retrieved=crag_retrieved,
             validation=self._validate_response(
                 query=query,
-                response=result.answer,
+                response=crag_result["final_answer"],
                 retrieved_context=retrieved_context,
             ),
             used_rewrite=used_rewrite,
@@ -298,6 +335,25 @@ class LLMGateway:
         if validation is not None:
             bucket = "grounded" if validation.grounded else "needs_review"
             self.validation_outcomes[bucket] = self.validation_outcomes.get(bucket, 0) + 1
+
+    def _build_crag_retrieval_results(
+        self,
+        retrieved_docs: List[Any],
+        relevance_labels: List[str],
+        *,
+        top_k: int,
+    ) -> List[tuple[float, Dict[str, Any]]]:
+        retrieved = documents_to_retrieval_results(retrieved_docs, top_k=top_k)
+        if not relevance_labels:
+            return retrieved
+
+        enriched: List[tuple[float, Dict[str, Any]]] = []
+        for index, (score, metadata) in enumerate(retrieved):
+            updated_metadata = dict(metadata)
+            if index < len(relevance_labels):
+                updated_metadata["crag_relevance"] = relevance_labels[index]
+            enriched.append((score, updated_metadata))
+        return enriched
 
     def stats(self) -> Dict[str, Any]:
         return {

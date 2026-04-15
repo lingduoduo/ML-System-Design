@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 import logging
-from typing import Any
+from typing import Any, List, Optional
 
+from feature_pipeline import _import_langchain_dependencies
 from Inference_pipeline import (
     CrossEncoderReranker,
     LLMTwin,
@@ -75,6 +79,235 @@ class RichRAGRuntime:
     multi_step_agent: Any
     query_engine: RAGQueryEngine
     langchain_feature_store: LangChainFeatureStore
+
+
+@dataclass
+class CRAGConfig:
+    top_k: int = TOP_K
+    trigger_web_if_any_no: bool = True
+    tavily_max_results: int = 5
+
+
+@lru_cache(maxsize=1)
+def _create_relevance_prompt() -> Any:
+    deps = _import_langchain_dependencies()
+    return deps["PromptTemplate"].from_template(
+        "You are a helpful assistant that determines whether a document chunk is relevant to answering a user's question.\n\n"
+        "Question:\n{question}\n\n"
+        "Chunk:\n{chunk}\n\n"
+        "Respond with exactly one word: yes or no."
+    )
+
+
+@lru_cache(maxsize=1)
+def _create_rewrite_query_prompt() -> Any:
+    deps = _import_langchain_dependencies()
+    return deps["PromptTemplate"].from_template(
+        "Rewrite the user question into a concise, search-ready query for a web search.\n\n"
+        "Original question:\n{question}\n\n"
+        "Search-ready query:"
+    )
+
+
+@lru_cache(maxsize=1)
+def _create_answer_prompt() -> Any:
+    deps = _import_langchain_dependencies()
+    return deps["PromptTemplate"].from_template(
+        "Answer the question using only the provided context. If the context does not contain enough information, say you cannot answer.\n\n"
+        "Question:\n{question}\n\n"
+        "Context:\n{context}\n\n"
+        "Answer:"
+    )
+
+
+def _get_search_retriever(vectorstore: Any, top_k: int) -> Any:
+    if hasattr(vectorstore, "as_retriever"):
+        return vectorstore.as_retriever(search_kwargs={"k": top_k})
+    return vectorstore
+
+
+@lru_cache(maxsize=1)
+def _get_str_output_parser() -> Any:
+    return _import_langchain_dependencies()["StrOutputParser"]()
+
+
+def _run_coroutine_sync(coroutine: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(coroutine)).result()
+
+
+def _get_document_text(doc: Any) -> str:
+    return (getattr(doc, "page_content", "") or "").strip()
+
+
+def _build_text_chain(prompt: Any, llm: Any) -> Any:
+    return prompt | llm | _get_str_output_parser()
+
+
+def _normalize_relevance_label(result: str) -> str:
+    normalized = result.strip().lower()
+    return "yes" if normalized.startswith("y") else "no"
+
+
+def _retrieve_local_documents(question: str, vectorstore: Any, top_k: int) -> list[Any]:
+    retriever = _get_search_retriever(vectorstore, top_k)
+    try:
+        return list(retriever.invoke(question) or [])
+    except Exception:
+        return []
+
+
+def local_docs_sufficiency(
+    question: str,
+    vectorstore: Any,
+    llm_grader: Any,
+    cfg: CRAGConfig,
+) -> tuple[bool, list[Any], list[str]]:
+    retrieved_docs = _retrieve_local_documents(question, vectorstore, cfg.top_k)
+    if not retrieved_docs:
+        return False, [], []
+
+    chunks = [_get_document_text(doc) for doc in retrieved_docs]
+    labels = _run_coroutine_sync(grade_relevance(llm_grader, question, chunks))
+    return any(label == "yes" for label in labels), retrieved_docs, labels
+
+
+def crag_query_sync(
+    question: str,
+    vectorstore: Any,
+    cfg: CRAGConfig,
+    llm_answer: Any,
+    llm_grader: Any,
+    llm_rewrite: Any,
+    tavily_tool: Optional[Any] = None,
+    retrieved_docs: Optional[List[Any]] = None,
+    relevance_labels: Optional[List[str]] = None,
+) -> dict:
+    return _run_coroutine_sync(
+        crag_query(
+            question=question,
+            vectorstore=vectorstore,
+            cfg=cfg,
+            llm_answer=llm_answer,
+            llm_grader=llm_grader,
+            llm_rewrite=llm_rewrite,
+            tavily_tool=tavily_tool,
+            retrieved_docs=retrieved_docs,
+            relevance_labels=relevance_labels,
+        )
+    )
+
+
+async def grade_relevance(
+    llm: Any,
+    question: str,
+    chunks: List[str],
+) -> List[str]:
+    """
+    Returns list of 'yes'/'no' per chunk.
+    """
+    chain = _build_text_chain(_create_relevance_prompt(), llm)
+    tasks = [
+        chain.ainvoke({"question": question, "chunk": chunk})
+        for chunk in chunks
+    ]
+    raw_results = await asyncio.gather(*tasks)
+    return [_normalize_relevance_label(str(result)) for result in raw_results]
+
+
+async def rewrite_query(llm: Any, question: str) -> str:
+    chain = _build_text_chain(_create_rewrite_query_prompt(), llm)
+    return (await chain.ainvoke({"question": question})).strip()
+
+
+def should_trigger_web(relevance_labels: List[str], trigger_if_any_no: bool) -> bool:
+    if not relevance_labels:
+        return True
+    if trigger_if_any_no:
+        return "no" in relevance_labels
+    return relevance_labels.count("no") > relevance_labels.count("yes")
+
+
+def fuse_context(local_chunks: List[str], web_snippets: List[str]) -> str:
+    parts: List[str] = []
+    if local_chunks:
+        parts.append("LOCAL CONTEXT:\n" + "\n\n".join(local_chunks))
+    if web_snippets:
+        parts.append("WEB SEARCH CONTEXT:\n" + "\n\n".join(web_snippets))
+    return "\n\n".join(parts).strip()
+
+
+async def answer_question(llm: Any, question: str, context: str) -> str:
+    chain = _build_text_chain(_create_answer_prompt(), llm)
+    return (await chain.ainvoke({"question": question, "context": context})).strip()
+
+
+async def crag_query(
+    question: str,
+    vectorstore: Any,
+    cfg: CRAGConfig,
+    llm_answer: Any,
+    llm_grader: Any,
+    llm_rewrite: Any,
+    tavily_tool: Optional[Any] = None,
+    retrieved_docs: Optional[List[Any]] = None,
+    relevance_labels: Optional[List[str]] = None,
+) -> dict:
+    """
+    Full CRAG run: local retrieve -> grade -> optional web correction -> fuse -> answer
+    Returns a structured dict for inspection.
+    """
+    # Step 1: local retrieve
+    local_docs = list(retrieved_docs) if retrieved_docs is not None else _retrieve_local_documents(question, vectorstore, cfg.top_k)
+    retrieved_chunks = [_get_document_text(doc) for doc in local_docs]
+
+    # Step 2: relevance grading
+    relevance = list(relevance_labels) if relevance_labels is not None else await grade_relevance(llm_grader, question, retrieved_chunks)
+
+    # Step 3: keep relevant local text
+    relevant_local = [chunk for chunk, lab in zip(retrieved_chunks, relevance) if lab == "yes"]
+
+    # Step 4: correct with query rewrite + web search if needed
+    web_snippets: List[str] = []
+    transformed_query: Optional[str] = None
+
+    if tavily_tool and should_trigger_web(relevance, cfg.trigger_web_if_any_no):
+        transformed_query = await rewrite_query(llm_rewrite, question)
+        try:
+            web_results = tavily_tool.invoke({"query": transformed_query, "max_results": cfg.tavily_max_results})
+            for item in web_results:
+                content = item.get("content") or item.get("snippet") or ""
+                title = item.get("title") or ""
+                if title and content:
+                    web_snippets.append(f"{title}\n{content}")
+                elif content:
+                    web_snippets.append(content)
+        except Exception as e:
+            web_snippets = [f"[Web search failed: {e}]" ]
+
+    # Step 5: fuse + answer
+    fused = fuse_context(relevant_local, web_snippets)
+    if not fused:
+        final_answer = "Sorry, I could not find relevant information to answer your question."
+    else:
+        final_answer = await answer_question(llm_answer, question, fused)
+
+    return {
+        "question": question,
+        "retrieved_count": len(local_docs),
+        "relevance_labels": relevance,
+        "kept_local_chunks": len(relevant_local),
+        "relevant_local": relevant_local,
+        "web_snippets": web_snippets,
+        "transformed_query": transformed_query,
+        "used_web": bool(web_snippets),
+        "final_answer": final_answer,
+    }
 
 
 @dataclass
