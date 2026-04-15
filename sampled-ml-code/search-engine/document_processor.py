@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 try:
     import yaml
@@ -27,12 +27,30 @@ DEFAULT_CONFIG = {
 class TextProcessor:
     """Config-driven document preprocessing for plain text and JSON payloads."""
 
+    NON_CONTENT_FIELDS = {
+        "id",
+        "dataset_id",
+        "document_id",
+        "segment_id",
+        "node_id",
+        "document_enabled",
+        "segment_enabled",
+        "rank",
+        "score",
+        "bm25_score",
+        "recall_score",
+        "type",
+        "partner",
+    }
+
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path or os.path.join(os.path.dirname(__file__), "config.yaml")
         self.config = self._load_config()["dify"]["process_rules"]
         self._separator_pattern = re.compile(
             self.config.get("segmentation", {}).get("separator", r"(?<=[.!?])\s+|\n+")
         )
+        self._url_email_pattern = re.compile(r"https?://\S+|\b\S+@\S+\.\S+\b")
+        self._token_pattern = re.compile(r"\b\w+\b")
 
     def _load_config(self) -> Dict[str, Any]:
         if os.path.exists(self.config_path) and yaml is not None:
@@ -54,7 +72,7 @@ class TextProcessor:
             text = re.sub(r"\s+", " ", text).strip()
 
         if self._is_rule_enabled(1, default=True):
-            text = re.sub(r"https?://\S+|\b\S+@\S+\.\S+\b", "", text)
+            text = self._url_email_pattern.sub("", text)
             text = re.sub(r"\s+", " ", text).strip()
 
         return text
@@ -79,26 +97,59 @@ class TextProcessor:
 
         return processed_texts
 
+    def _extract_text_values(self, input_data: Any, text_fields: Optional[Sequence[str]] = None) -> List[str]:
+        if isinstance(input_data, str):
+            return [input_data]
+
+        if not isinstance(input_data, dict):
+            return []
+
+        if text_fields:
+            values: Iterable[Any] = (input_data.get(field, "") for field in text_fields)
+        elif "rec_texts" in input_data:
+            values = input_data.get("rec_texts", [])
+        else:
+            values = (
+                value
+                for key, value in input_data.items()
+                if key not in self.NON_CONTENT_FIELDS and isinstance(value, (str, int, float)) and not isinstance(value, bool)
+            )
+
+        extracted = []
+        for value in values:
+            if value is None:
+                continue
+            text = self.preprocess(str(value))
+            if text:
+                extracted.append(text)
+        return extracted
+
     def process(self, input_data: Any) -> List[str]:
         """
         Unified entry point for text or JSON payloads.
 
         Returns segmented text chunks.
         """
-        if isinstance(input_data, dict):
-            cleaned_texts = self.preprocess_json(input_data)
-            combined_text = " ".join(cleaned_texts).strip()
-            return self.segment(combined_text) if combined_text else []
-
-        if isinstance(input_data, str):
-            cleaned_text = self.preprocess(input_data)
-            return self.segment(cleaned_text)
+        extracted_texts = self._extract_text_values(input_data)
+        combined_text = " ".join(extracted_texts).strip()
+        if combined_text:
+            return self.segment(combined_text)
 
         return []
 
-    def normalize_document(self, input_data: Any) -> str:
+    def normalize_document(self, input_data: Any, text_fields: Optional[Sequence[str]] = None) -> str:
         """Convert supported inputs into one cleaned document string."""
-        return " ".join(self.process(input_data)).strip()
+        extracted_texts = self._extract_text_values(input_data, text_fields=text_fields)
+        return " ".join(extracted_texts).strip()
+
+    def tokenize(self, input_data: Any, text_fields: Optional[Sequence[str]] = None) -> List[str]:
+        """Normalize and tokenize text with one shared retrieval-friendly path."""
+        normalized_text = self.normalize_document(input_data, text_fields=text_fields).lower()
+        return self.tokenize_normalized(normalized_text)
+
+    def tokenize_normalized(self, normalized_text: str) -> List[str]:
+        """Tokenize already-normalized text without re-running preprocessing."""
+        return self._token_pattern.findall(normalized_text)
 
 
 if __name__ == "__main__":

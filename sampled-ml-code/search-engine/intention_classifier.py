@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import List, Dict, Tuple
-from collections import Counter
+
+from vocabulary import Vocabulary
 
 
 class IntentionClassifier(nn.Module):
@@ -39,44 +40,16 @@ class IntentionClassifier(nn.Module):
         return predicted_intents, predicted_probs
 
 
-class TokenVocabulary:
-    """Simple vocabulary for token-to-id conversion."""
-
-    def __init__(self):
-        self.token2id = {"<PAD>": 0, "<UNK>": 1}
-        self.id2token = {0: "<PAD>", 1: "<UNK>"}
-        self.counter = Counter()
-
-    def build(self, tokens_list: List[List[str]], min_freq: int = 2) -> None:
-        for tokens in tokens_list:
-            self.counter.update(tokens)
-        
-        for token, freq in self.counter.items():
-            if freq >= min_freq and token not in self.token2id:
-                token_id = len(self.token2id)
-                self.token2id[token] = token_id
-                self.id2token[token_id] = token
-
-    def encode(self, tokens: List[str], max_len: int = 32) -> torch.Tensor:
-        token_ids = [self.token2id.get(token, self.token2id["<UNK>"]) for token in tokens]
-        token_ids = token_ids[:max_len]
-        token_ids += [self.token2id["<PAD>"]] * (max_len - len(token_ids))
-        return torch.tensor([token_ids], dtype=torch.long)
-
-    def decode(self, token_ids: List[int]) -> List[str]:
-        return [self.id2token.get(token_id, "<UNK>") for token_id in token_ids]
-
-
 class IntentionClassificationPipeline:
     """Pipeline for intention classification with vocabulary management."""
 
     def __init__(self, vocab_size: int = 5000, embedding_dim: int = 128, hidden_dim: int = 256):
-        self.vocab = TokenVocabulary()
+        self.vocab = Vocabulary()
         self.model = IntentionClassifier(vocab_size, embedding_dim, hidden_dim, num_classes=4)
         self.is_trained = False
 
     def train_model(self, train_data: List[Tuple[List[str], str]], epochs: int = 10, lr: float = 0.001) -> None:
-        self.vocab.build([tokens for tokens, _ in train_data])
+        self.vocab.build([tokens for tokens, _ in train_data], min_freq=2)
         
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss()
@@ -88,7 +61,7 @@ class IntentionClassificationPipeline:
             total_loss = 0.0
             for tokens, label in train_data:
                 token_ids = self.vocab.encode(tokens)
-                token_ids = token_ids.to(self.model.device)
+                token_ids = torch.tensor([token_ids], dtype=torch.long).to(self.model.device)
                 label_id = torch.tensor([label_to_id[label]], dtype=torch.long).to(self.model.device)
                 
                 optimizer.zero_grad()
@@ -109,7 +82,7 @@ class IntentionClassificationPipeline:
             raise RuntimeError("Model not trained. Call train_model first.")
         
         token_ids = self.vocab.encode(tokens)
-        token_ids = token_ids.to(self.model.device)
+        token_ids = torch.tensor([token_ids], dtype=torch.long).to(self.model.device)
         predicted_intents, predicted_probs = self.model.predict(token_ids)
         
         return predicted_intents[0], predicted_probs[0]

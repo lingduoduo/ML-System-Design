@@ -1,6 +1,7 @@
 import math
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple, Union
+import heapq
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from document_processor import TextProcessor
 
@@ -34,15 +35,17 @@ class BM25:
         self.docs = documents
         self.num_docs = len(documents)
 
+        doc_counts = Counter()
         for doc in documents:
-            self.doc_freqs.append(Counter(doc))
+            term_counts = Counter(doc)
+            self.doc_freqs.append(term_counts)
             self.doc_len.append(len(doc))
-            self.vocab.update(doc)
+            self.vocab.update(term_counts)
+            doc_counts.update(term_counts.keys())
 
         self.avg_doc_len = sum(self.doc_len) / self.num_docs if self.num_docs > 0 else 0.0
 
-        for term in self.vocab:
-            doc_count = sum(1 for doc_freq in self.doc_freqs if term in doc_freq)
+        for term, doc_count in doc_counts.items():
             self.idf[term] = math.log((self.num_docs - doc_count + 0.5) / (doc_count + 0.5) + 1)
 
     def search(self, query: List[str], top_k: int = 5) -> List[Tuple[int, float]]:
@@ -71,8 +74,7 @@ class BM25:
             if score > 0:
                 scores.append((doc_id, score))
 
-        scores.sort(key=lambda item: item[1], reverse=True)
-        return scores[:top_k]
+        return heapq.nlargest(top_k, scores, key=lambda item: item[1])
 
     def batch_search(self, queries: List[List[str]], top_k: int = 5) -> List[List[Tuple[int, float]]]:
         return [self.search(query, top_k) for query in queries]
@@ -87,25 +89,21 @@ class BM25Retriever:
         self.documents: List[Dict[str, object]] = []
         self.document_tokens: List[List[str]] = []
 
-    def _tokenize_text(self, text: str) -> List[str]:
-        cleaned = self.text_processor.preprocess(text).lower()
-        return [token for token in cleaned.split() if token]
-
-    def _normalize_document(self, document: Any, text_fields: Optional[List[str]]) -> Tuple[Dict[str, object], List[str]]:
+    def _normalize_document(
+        self,
+        document: Any,
+        text_fields: Optional[Sequence[str]],
+    ) -> Tuple[Dict[str, object], List[str]]:
         if isinstance(document, dict):
             doc_copy = document.copy()
-            if text_fields is None:
-                normalized_text = self.text_processor.normalize_document(document)
-            else:
-                extracted_parts = [str(document.get(field, "")) for field in text_fields]
-                normalized_text = self.text_processor.normalize_document(" ".join(extracted_parts))
+            normalized_text = self.text_processor.normalize_document(document, text_fields=text_fields)
             doc_copy.setdefault("content", normalized_text)
-            return doc_copy, self._tokenize_text(normalized_text)
+            return doc_copy, self.text_processor.tokenize_normalized(normalized_text.lower())
 
         normalized_text = self.text_processor.normalize_document(document)
-        return {"content": normalized_text}, self._tokenize_text(normalized_text)
+        return {"content": normalized_text}, self.text_processor.tokenize_normalized(normalized_text.lower())
 
-    def index_documents(self, documents: List[Any], text_fields: Optional[List[str]] = None) -> None:
+    def index_documents(self, documents: List[Any], text_fields: Optional[Sequence[str]] = None) -> None:
         self.documents = []
         self.document_tokens = []
 
@@ -120,7 +118,7 @@ class BM25Retriever:
 
     def _normalize_query(self, query: TokenizedQuery) -> List[str]:
         if isinstance(query, str):
-            return self._tokenize_text(query)
+            return self.text_processor.tokenize(query)
         return [token.lower() for token in query if token]
 
     def retrieve(self, query: TokenizedQuery, top_k: int = 5) -> List[Dict[str, object]]:

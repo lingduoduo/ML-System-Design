@@ -9,6 +9,7 @@ from nltk.stem import WordNetLemmatizer
 from nltk.util import ngrams
 
 from text_preprocessing import extract_companies
+from vocabulary import Vocabulary
 
 try:
     import spacy
@@ -48,6 +49,7 @@ class SearchQueryProcessor:
         self.language = language
         self.stop_words = self._load_stop_words(language)
         self.lemmatizer = WordNetLemmatizer()
+        self.vocab = Vocabulary()
         self.intent_keywords = {
             "purchase": ["buy", "purchase", "order", "shop", "checkout"],
             "navigate": ["map", "directions", "navigate", "route", "go to"],
@@ -186,7 +188,7 @@ class SearchQueryProcessor:
 
     def vocabulary(self) -> Set[str]:
         synonym_terms = {term for values in self.synonym_map.values() for term in values}
-        return set(self.synonym_map.keys()) | synonym_terms | self.stop_words | self.LOCATION_WORDS
+        return set(self.synonym_map.keys()) | synonym_terms | set(self.vocab.tokens) | self.stop_words | self.LOCATION_WORDS
 
     def expand_synonyms(self, tokens: List[str]) -> List[str]:
         expanded = list(tokens)
@@ -235,7 +237,7 @@ class SearchQueryProcessor:
         return entities
 
     def simple_error_correction(self, tokens: List[str]) -> List[str]:
-        vocabulary = self.vocabulary()
+        vocabulary = set(self.vocab.tokens)
         corrected = []
         for token in tokens:
             lower_token = token.lower()

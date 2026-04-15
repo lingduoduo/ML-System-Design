@@ -1,6 +1,7 @@
+import heapq
 from typing import Dict, List, Tuple
 
-from query_understanding import SearchQueryProcessor
+from search_engine import SearchQueryProcessor
 
 
 class SearchRecallEngine:
@@ -12,8 +13,19 @@ class SearchRecallEngine:
 
     def initialize_poi_index(self, poi_index: List[Dict[str, object]] = None) -> None:
         poi_index = poi_index if poi_index is not None else self._default_poi_index()
-        self.main_poi_index = [poi for poi in poi_index if poi.get("partner", False)]
-        self.backup_poi_index = [poi for poi in poi_index if not poi.get("partner", False)]
+        prepared_index = [self._prepare_poi(poi) for poi in poi_index]
+        self.main_poi_index = [poi for poi in prepared_index if poi.get("partner", False)]
+        self.backup_poi_index = [poi for poi in prepared_index if not poi.get("partner", False)]
+
+    def _prepare_poi(self, poi: Dict[str, object]) -> Dict[str, object]:
+        prepared = poi.copy()
+        prepared["_search_fields"] = {
+            "name": str(prepared.get("name", "")).lower(),
+            "category": str(prepared.get("category", "")).lower(),
+            "city": str(prepared.get("city", "")).lower(),
+            "description": str(prepared.get("description", "")).lower(),
+        }
+        return prepared
 
     def _default_poi_index(self) -> List[Dict[str, object]]:
         return [
@@ -58,7 +70,7 @@ class SearchRecallEngine:
             "city": 2.0,
             "description": 1.0,
         }
-        source = {field: str(poi.get(field, "")).lower() for field in field_weights}
+        source = poi.get("_search_fields") or {field: str(poi.get(field, "")).lower() for field in field_weights}
         score = 0.0
         for term in terms:
             normalized_term = term.lower()
@@ -72,11 +84,11 @@ class SearchRecallEngine:
     def _search_pool(self, terms: List[str], pool: List[Dict[str, object]], top_k: int) -> List[Dict[str, object]]:
         scored = [(self._field_match_score(poi, terms), poi) for poi in pool]
         scored = [(score, poi) for score, poi in scored if score > 0.0]
-        ranked = sorted(scored, key=lambda item: item[0], reverse=True)[:top_k]
+        ranked = heapq.nlargest(top_k, scored, key=lambda item: item[0])
 
         results = []
         for score, poi in ranked:
-            poi_copy = poi.copy()
+            poi_copy = {key: value for key, value in poi.items() if key != "_search_fields"}
             poi_copy["recall_score"] = round(score, 4)
             results.append(poi_copy)
         return results

@@ -1,5 +1,6 @@
 import re
-from typing import List, Optional
+from functools import lru_cache
+from typing import List, Optional, Sequence
 
 import nltk
 from nltk.corpus import stopwords
@@ -29,7 +30,7 @@ _DIGITS_RE = re.compile(r"\b(\d+)(st|nd|rd|th)?\b", flags=re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z]+")
 _PUNCTUATION_RE = re.compile(r"[^ A-Za-z0-9]+")
 
-_DEFAULT_STOPWORDS = {
+_DEFAULT_STOPWORDS = frozenset({
     "a",
     "an",
     "and",
@@ -43,10 +44,10 @@ _DEFAULT_STOPWORDS = {
     "to",
     "want",
     "with",
-}
+})
 
 try:
-    _STOPWORDS = set(stopwords.words("english"))
+    _STOPWORDS = frozenset(stopwords.words("english"))
 except Exception:
     _STOPWORDS = _DEFAULT_STOPWORDS
 
@@ -137,6 +138,11 @@ def lemmatizing(text: str) -> str:
     return " ".join(lemmas)
 
 
+def normalize_tokens(tokens: Sequence[str]) -> List[str]:
+    """Normalize a token sequence with the same pipeline used for raw text."""
+    return [token for token in preprocessing(" ".join(tokens), max_chars=None).split() if token]
+
+
 def _get_spacy_model():
     global _SPACY_MODEL
     if spacy is None:
@@ -160,35 +166,43 @@ def extract_companies(text: str, render: bool = False) -> List[str]:
     return [ent.text for ent in doc.ents if ent.label_ == "ORG"]
 
 
+@lru_cache(maxsize=4096)
+def _preprocess_cached(input_text: str) -> str:
+    output = decode(input_text or "")
+    output = output.lower()
+    output = _DIGITS_RE.sub(digits_to_words, output)
+    output = _PUNCTUATION_RE.sub("", output)
+    output = spelling_correction(output)
+    output = remove_stop_words(output)
+    return lemmatizing(output)
+
+
 def preprocessing(input_text: str, debug: bool = False, max_chars: Optional[int] = 64) -> str:
     """Run a compact text preprocessing pipeline."""
-    output = input_text or ""
-    output = decode(output)
+    raw_text = input_text or ""
+
     if debug:
+        output = decode(raw_text)
         print("\nDecode/remove encoding:\n        ", output)
 
-    output = output.lower()
-    if debug:
+        output = output.lower()
         print("\nLower casing:\n        ", output)
 
-    output = _DIGITS_RE.sub(digits_to_words, output)
-    if debug:
+        output = _DIGITS_RE.sub(digits_to_words, output)
         print("\nDigits to words:\n        ", output)
 
-    output = _PUNCTUATION_RE.sub("", output)
-    if debug:
+        output = _PUNCTUATION_RE.sub("", output)
         print("\nRemove punctuations and other special characters:\n        ", output)
 
-    output = spelling_correction(output)
-    if debug:
+        output = spelling_correction(output)
         print("\nSpelling corrections:\n        ", output)
 
-    output = remove_stop_words(output)
-    if debug:
+        output = remove_stop_words(output)
         print("\nRemove stop words:\n        ", output)
 
-    output = lemmatizing(output)
-    if debug:
+        output = lemmatizing(output)
         print("\nLemmatizing:\n        ", output)
+    else:
+        output = _preprocess_cached(raw_text)
 
     return output[:max_chars] if max_chars is not None else output

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 
 from document_processor import TextProcessor
+from vocabulary import Vocabulary
 
 
 @dataclass
@@ -34,6 +35,7 @@ class InMemorySemanticVectorStore:
 
     def __init__(self, text_processor: Optional[TextProcessor] = None):
         self.text_processor = text_processor or TextProcessor()
+        self.vocab = Vocabulary()
         self.documents: List[IndexedSemanticDocument] = []
         self.term_to_doc_ids: Dict[str, Set[int]] = defaultdict(set)
         self.dataset_to_doc_ids: Dict[str, Set[int]] = defaultdict(set)
@@ -46,10 +48,10 @@ class InMemorySemanticVectorStore:
         self.dataset_to_doc_ids = defaultdict(set)
         self.enabled_doc_ids = set()
         self.enabled_segment_ids = set()
+        self.vocab = Vocabulary()
 
     def _tokenize(self, text: str) -> List[str]:
-        cleaned = self.text_processor.preprocess(text).lower()
-        return [token for token in cleaned.split() if token]
+        return self.text_processor.tokenize(text)
 
     def _embed_from_tokens(self, tokens: List[str]) -> Dict[str, float]:
         if not tokens:
@@ -70,8 +72,9 @@ class InMemorySemanticVectorStore:
     def _cosine_similarity(self, left: Dict[str, float], right: Dict[str, float]) -> float:
         if not left or not right:
             return 0.0
-        shared_terms = set(left) & set(right)
-        return sum(left[term] * right[term] for term in shared_terms)
+        if len(left) > len(right):
+            left, right = right, left
+        return sum(value * right.get(term, 0.0) for term, value in left.items())
 
     def add_documents(self, documents: Sequence[RetrievedDocument], reset: bool = False) -> None:
         if reset:
@@ -100,6 +103,8 @@ class InMemorySemanticVectorStore:
                 self.enabled_segment_ids.add(doc_id)
             for term in vector:
                 self.term_to_doc_ids[term].add(doc_id)
+
+            self.vocab.add_many(tokens)
 
     def _candidate_doc_ids(self, query_vector: Dict[str, float], filters: Dict[str, Any]) -> Set[int]:
         candidate_ids: Set[int] = set()
