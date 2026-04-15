@@ -8,6 +8,8 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from nltk.util import ngrams
 
+from text_preprocessing import extract_companies
+
 try:
     import spacy
 except ImportError:
@@ -147,6 +149,9 @@ class SearchQueryProcessor:
         entities = [(item, "DATE") for item in self.DATE_PATTERN.findall(text)]
         entities.extend((item, "NUMBER") for item in self.NUMBER_PATTERN.findall(text))
         return entities
+
+    def extract_organizations(self, text: str, render: bool = False) -> List[str]:
+        return extract_companies(text, render=render)
 
     def remove_stopwords(self, tokens: List[str]) -> List[str]:
         return [token for token in tokens if token.lower() not in self.stop_words]
