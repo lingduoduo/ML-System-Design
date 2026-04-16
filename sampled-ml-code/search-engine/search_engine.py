@@ -37,12 +37,12 @@ class SearchQueryProcessor:
     DATE_PATTERN = re.compile(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}:\d{2}")
     NUMBER_PATTERN = re.compile(r"\d+\.?\d*")
     LOCATION_WORDS = {
-        "beijing",
-        "shanghai",
-        "new york",
-        "new jersey",
         "london",
-        "california",
+        "manchester",
+        "edinburgh",
+        "oxford",
+        "cambridge",
+        "bristol",
     }
 
     def __init__(self, language: str = "en"):
@@ -59,8 +59,8 @@ class SearchQueryProcessor:
         self.synonym_map = {
             "tv": ["television", "smart tv"],
             "notebook": ["laptop", "ultrabook"],
-            "spa": ["hot spring", "resort"],
-            "hot spring": ["spa", "resort"],
+            "museum": ["gallery", "exhibition"],
+            "gallery": ["museum", "exhibition"],
             "phone": ["smartphone", "mobile"],
         }
         self.click_log = Counter()
@@ -244,7 +244,14 @@ class SearchQueryProcessor:
             if lower_token in vocabulary or len(token) <= 1:
                 corrected.append(lower_token)
                 continue
-            candidates = [word for word in vocabulary if abs(len(word) - len(lower_token)) <= 2]
+            # First-char + length filter cuts candidate set ~10x before the expensive edit-distance scan
+            first_char = lower_token[0]
+            candidates = [
+                word for word in vocabulary
+                if abs(len(word) - len(lower_token)) <= 2 and word[:1] == first_char
+            ]
+            if not candidates:
+                candidates = [word for word in vocabulary if abs(len(word) - len(lower_token)) <= 2]
             if not candidates:
                 corrected.append(lower_token)
                 continue
@@ -306,8 +313,8 @@ class SearchQueryProcessor:
 
 if __name__ == "__main__":
     processor = SearchQueryProcessor()
-    processor.set_idf({"beijing": 2.5, "hot": 1.5, "spring": 1.8, "famous": 1.2})
-    processor.update_click_log(["beijing", "hot", "spring"])
-    result = processor.process_query("Beijing famous hot spring 😊 I want to see scenery", max_chars=64)
+    processor.set_idf({"london": 2.5, "museum": 1.5, "historic": 1.8, "famous": 1.2})
+    processor.update_click_log(["london", "museum", "historic"])
+    result = processor.process_query("London famous museum 😊 I want to see history", max_chars=64)
     for key, value in result.items():
         print(f"{key}: {value}")

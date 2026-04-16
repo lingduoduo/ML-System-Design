@@ -14,8 +14,13 @@ except ImportError as exc:  # pragma: no cover - environment-specific import fai
 
 SPACY_AVAILABLE = spacy is not None
 
+# Module-level cache so all classes share loaded models instead of each loading their own copy
+_SPACY_NLP_CACHE = {}
+
 
 def load_spacy_pipeline(model_name: str, fallback_to_blank: bool = True):
+    if model_name in _SPACY_NLP_CACHE:
+        return _SPACY_NLP_CACHE[model_name]
     if not SPACY_AVAILABLE:
         raise ImportError("spaCy is required for semantic slicing") from SPACY_IMPORT_ERROR
     try:
@@ -27,6 +32,7 @@ def load_spacy_pipeline(model_name: str, fallback_to_blank: bool = True):
 
     if "sentencizer" not in nlp.pipe_names:
         nlp.add_pipe("sentencizer")
+    _SPACY_NLP_CACHE[model_name] = nlp
     return nlp
 
 
@@ -174,10 +180,10 @@ class ContextRelevanceScorer:
             "best": 0.7,
             "great": 0.6,
             "excellent": 0.7,
-            "hot": 0.5,
-            "spring": 0.6,
-            "spa": 0.6,
-            "resort": 0.6,
+            "museum": 0.6,
+            "gallery": 0.6,
+            "historic": 0.5,
+            "landmark": 0.6,
         }
 
     def score_context_relevance(self, query: str, segments: List[SemanticSegment]) -> List[float]:
@@ -435,15 +441,15 @@ if __name__ == "__main__":
     pipeline = SemanticSlicingPipeline()
 
     queries = [
-        "What are the best hot springs in New Jersey?",
-        "How do I get to the spa resort?",
-        "Why is this hot spring famous compared to others?",
+        "What are the best museums in London?",
+        "How do I get to the National Gallery?",
+        "Why is this museum famous compared to others?",
     ]
 
     contexts = [
-        "New Jersey has several excellent hot springs. Shunjing Hot Spring is well-known for its resort facilities. Jiuhua Mountain Resort offers scenic spa services. The Capital Hot Spring provides popular hotel amenities.",
-        "To reach the spa resort, take the main highway and follow the signs. The resort is located in a beautiful mountain area with easy access from downtown.",
-        "This hot spring is famous because it has unique mineral content that provides therapeutic benefits. Unlike regular spas, it offers authentic hot spring experience with natural geothermal water.",
+        "London has several world-class museums. The British Museum is well-known for its vast collection of art and artefacts. Tate Modern offers contemporary art in a converted power station. The Natural History Museum provides natural history exhibits.",
+        "To reach the National Gallery, take the Underground to Charing Cross or Leicester Square. The gallery is located on the north side of Trafalgar Square with easy access from central London.",
+        "This museum is famous because it houses rare artefacts from ancient civilisations. Unlike commercial exhibitions, it offers free admission and authentic historical context.",
     ]
 
     print("=== Semantic Slicing Analysis ===")

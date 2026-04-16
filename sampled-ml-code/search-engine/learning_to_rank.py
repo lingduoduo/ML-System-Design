@@ -178,13 +178,16 @@ class PairwiseLTRRanker:
             pair_count = 0
 
             for query, docs, relevance_labels in train_data:
+                # Precompute features once per doc to avoid O(n²) redundant extractions
+                all_doc_features = [
+                    self.feature_extractor.extract_features(query, doc) for doc in docs
+                ]
                 for i in range(len(docs)):
                     for j in range(i + 1, len(docs)):
-                        doc1, doc2 = docs[i], docs[j]
                         label1, label2 = relevance_labels[i], relevance_labels[j]
 
-                        features1 = self.feature_extractor.extract_features(query, doc1)
-                        features2 = self.feature_extractor.extract_features(query, doc2)
+                        features1 = all_doc_features[i]
+                        features2 = all_doc_features[j]
 
                         features1_tensor = torch.tensor([features1]).to(self.model.device)
                         features2_tensor = torch.tensor([features2]).to(self.model.device)
@@ -215,22 +218,20 @@ class PairwiseLTRRanker:
             raise RuntimeError("Model not trained. Call train first.")
 
         self.model.eval()
-        scores = [0.0] * len(docs)
+        n = len(docs)
+        scores = [0.0] * n
+
+        # Precompute features once per doc (O(n) instead of O(n²) extractions)
+        all_doc_features = [self.feature_extractor.extract_features(query, doc) for doc in docs]
+        features_tensor = torch.tensor(all_doc_features, dtype=torch.float32).to(self.model.device)
 
         with torch.no_grad():
-            for i in range(len(docs)):
-                for j in range(len(docs)):
-                    if i == j:
-                        continue
-
-                    features1 = self.feature_extractor.extract_features(query, docs[i])
-                    features2 = self.feature_extractor.extract_features(query, docs[j])
-
-                    features1_tensor = torch.tensor([features1]).to(self.model.device)
-                    features2_tensor = torch.tensor([features2]).to(self.model.device)
-
-                    preference = self.model(features1_tensor, features2_tensor).item()
-                    scores[i] += preference
+            for i in range(n):
+                for j in range(i + 1, n):
+                    # Use antisymmetry: pref(j,i) ≈ 1 - pref(i,j), halving forward passes
+                    pref_ij = self.model(features_tensor[i:i+1], features_tensor[j:j+1]).item()
+                    scores[i] += pref_ij
+                    scores[j] += 1.0 - pref_ij
 
         ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
         result = []
@@ -244,27 +245,27 @@ class PairwiseLTRRanker:
 
 if __name__ == "__main__":
     pois = [
-        {"id": 1, "name": "Shunjing Hot Spring", "category": "Hot Spring", "description": "well-known resort"},
-        {"id": 2, "name": "Jiuhua Mountain Resort", "category": "Hot Spring", "description": "scenic spa resort"},
-        {"id": 3, "name": "City Spa Center", "category": "Spa", "description": "relaxing services"},
-        {"id": 4, "name": "Capital Hot Spring", "category": "Hot Spring", "description": "popular hotel"},
+        {"id": 1, "name": "Tower of London", "category": "Historic Landmark", "description": "ancient fortress and UNESCO World Heritage Site"},
+        {"id": 2, "name": "British Museum", "category": "Museum", "description": "world-class collection of art and artefacts"},
+        {"id": 3, "name": "Tate Modern", "category": "Gallery", "description": "contemporary art gallery on the South Bank"},
+        {"id": 4, "name": "Hyde Park", "category": "Park", "description": "iconic royal park with open-air concerts"},
     ]
 
     training_data = [
-        (["hot", "spring"], pois[:3], [3, 4, 1]),
-        (["spa", "city"], pois, [2, 1, 5, 2]),
+        (["museum", "london"], pois[:3], [3, 4, 1]),
+        (["gallery", "art"], pois, [2, 1, 5, 2]),
     ]
 
     print("=== Point-wise LTR ===")
     pointwise_ranker = PointwiseLTRRanker()
     pointwise_ranker.train(training_data, epochs=5)
-    results = pointwise_ranker.rank(["hot", "spring"], pois, top_k=2)
+    results = pointwise_ranker.rank(["museum", "london"], pois, top_k=2)
     for doc in results:
         print(f"  {doc['name']}: {doc.get('pointwise_ltr_score', 0):.4f}")
 
     print("\n=== Pair-wise LTR ===")
     pairwise_ranker = PairwiseLTRRanker()
     pairwise_ranker.train(training_data, epochs=5)
-    results = pairwise_ranker.rank(["hot", "spring"], pois, top_k=2)
+    results = pairwise_ranker.rank(["museum", "london"], pois, top_k=2)
     for doc in results:
         print(f"  {doc['name']}: {doc.get('pairwise_ltr_score', 0):.4f}")

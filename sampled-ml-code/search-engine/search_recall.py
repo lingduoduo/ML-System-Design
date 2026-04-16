@@ -31,34 +31,34 @@ class SearchRecallEngine:
         return [
             {
                 "id": 1,
-                "name": "Shunjing Hot Spring",
-                "category": "Hot Spring Resort",
-                "city": "Beijing",
-                "description": "A partner resort known for mineral pools and family-friendly spa services.",
+                "name": "Tower of London",
+                "category": "Historic Landmark",
+                "city": "London",
+                "description": "Ancient fortress and UNESCO World Heritage Site, home to the Crown Jewels.",
                 "partner": True,
             },
             {
                 "id": 2,
-                "name": "Jiuhua Mountain Resort",
-                "category": "Hot Spring Resort",
-                "city": "Beijing",
-                "description": "A mountain resort with outdoor springs, lodging, and scenic relaxation areas.",
+                "name": "British Museum",
+                "category": "Museum",
+                "city": "London",
+                "description": "World-class museum housing art and artefacts from global cultures, with free admission.",
                 "partner": True,
             },
             {
                 "id": 3,
-                "name": "Capital Hot Spring Hotel",
-                "category": "Hot Spring Hotel",
-                "city": "Beijing",
-                "description": "Popular hotel spa with convenient city access and business traveler amenities.",
+                "name": "Tate Modern",
+                "category": "Gallery",
+                "city": "London",
+                "description": "Contemporary art gallery in a converted power station on the South Bank.",
                 "partner": False,
             },
             {
                 "id": 4,
-                "name": "Garden Spa Center",
-                "category": "Urban Spa",
-                "city": "Shanghai",
-                "description": "Day spa focused on massage, wellness packages, and quiet indoor pools.",
+                "name": "National Portrait Gallery",
+                "category": "Gallery",
+                "city": "London",
+                "description": "Portraits of historically significant people from British history and culture.",
                 "partner": False,
             },
         ]
@@ -152,10 +152,10 @@ class SearchRecallEngine:
 
 if __name__ == "__main__":
     engine = SearchRecallEngine()
-    engine.processor.set_idf({"new jersey": 0.48, "famous": 0.39, "hot": 0.55, "spring": 0.55})
-    engine.processor.update_click_log(["new jersey", "famous", "hot", "spring"])
+    engine.processor.set_idf({"london": 0.48, "famous": 0.39, "museum": 0.55, "historic": 0.55})
+    engine.processor.update_click_log(["london", "famous", "museum", "historic"])
 
-    query = "Beijing famous hot spring"
+    query = "London famous museum"
     result = engine.recall(query)
 
     print("Query:", query)

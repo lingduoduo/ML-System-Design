@@ -234,18 +234,18 @@ class SemanticRetriever:
 if __name__ == "__main__":
     sample_documents = [
         {
-            "dataset_id": "spa-dataset",
+            "dataset_id": "london-dataset",
             "document_id": "doc-1",
             "segment_id": "seg-1",
-            "content": "Shunjing Hot Spring offers outdoor pools and scenic mountain views.",
+            "content": "The British Museum houses a vast collection of art and artefacts from world cultures.",
             "document_enabled": True,
             "segment_enabled": True,
         },
         {
-            "dataset_id": "spa-dataset",
+            "dataset_id": "london-dataset",
             "document_id": "doc-2",
             "segment_id": "seg-2",
-            "content": "Jiuhua Resort has spa services, family amenities, and relaxing hot springs.",
+            "content": "Tate Modern is a contemporary art gallery on the South Bank with free permanent collections.",
             "document_enabled": True,
             "segment_enabled": True,
         },
@@ -253,16 +253,16 @@ if __name__ == "__main__":
             "dataset_id": "city-dataset",
             "document_id": "doc-3",
             "segment_id": "seg-3",
-            "content": "City museum tickets and exhibition schedules for downtown visitors.",
+            "content": "Manchester's Museum of Science and Industry chronicles the industrial revolution.",
             "document_enabled": True,
             "segment_enabled": True,
         },
     ]
 
-    retriever = SemanticRetriever(dataset_ids=["spa-dataset"], search_kwargs={"k": 2})
+    retriever = SemanticRetriever(dataset_ids=["london-dataset"], search_kwargs={"k": 2})
     retriever.index_documents(sample_documents)
 
-    results = retriever.retrieve("best spa hot spring resort")
+    results = retriever.retrieve("best museum art gallery london")
     for document in results:
         print(
             f"{document.metadata['rank']}. "

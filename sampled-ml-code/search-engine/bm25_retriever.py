@@ -144,21 +144,21 @@ if __name__ == "__main__":
     documents = [
         {
             "id": 1,
-            "name": "Shunjing Hot Spring",
-            "category": "Hot Spring",
-            "description": "Well-known resort with scenic outdoor pools.",
+            "name": "Tower of London",
+            "category": "Historic Landmark",
+            "description": "Ancient fortress and UNESCO World Heritage Site.",
         },
         {
             "id": 2,
-            "name": "Jiuhua Mountain Resort",
-            "category": "Hot Spring",
-            "description": "Spa resort with mountain views and family amenities.",
+            "name": "British Museum",
+            "category": "Museum",
+            "description": "World-class museum with art and artefacts from global cultures.",
         },
         {
             "id": 3,
             "rec_texts": [
-                "City Spa Center offers relaxing services.",
-                "Contact us at spa@example.com for package details.",
+                "Tate Modern is a contemporary art gallery on the South Bank.",
+                "Contact us at info@tate.org.uk for exhibition details.",
             ],
         },
     ]
@@ -166,7 +166,7 @@ if __name__ == "__main__":
     retriever = BM25Retriever()
     retriever.index_documents(documents, text_fields=["name", "category", "description"])
 
-    query = "hot spring resort"
+    query = "museum london"
     results = retriever.retrieve(query, top_k=2)
     print(f"Query: {query}")
     for doc in results:
@@ -176,7 +176,7 @@ if __name__ == "__main__":
             f"(BM25 score: {doc['bm25_score']:.4f}, matched_terms={doc['matched_terms']})"
         )
 
-    batch_queries = ["hot spring", ["spa", "services"]]
+    batch_queries = ["museum london", ["gallery", "art"]]
     batch_results = retriever.batch_retrieve(batch_queries, top_k=2)
     for query_item, query_results in zip(batch_queries, batch_results):
         print(f"Query: {query_item}")

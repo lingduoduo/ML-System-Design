@@ -207,18 +207,21 @@ class DenseSemanticReranker:
             pair_count = 0
 
             for query, docs, relevance_labels in train_data:
+                # Extract query features once per query (not once per pair)
+                empty_doc = {"name": "", "description": "", "category": ""}
+                query_features = self.feature_extractor.extract_features(query, empty_doc)
+                query_tensor = torch.tensor(query_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
+
+                # Precompute document features once per doc to avoid O(n²) extractions
+                all_doc_features = [self.feature_extractor.extract_features(query, doc) for doc in docs]
+
                 for i in range(len(docs)):
                     for j in range(i + 1, len(docs)):
                         if relevance_labels[i] == relevance_labels[j]:
                             continue
 
-                        query_features = self.feature_extractor.extract_features(query, docs[i])
-                        doc1_features = self.feature_extractor.extract_features(query, docs[i])
-                        doc2_features = self.feature_extractor.extract_features(query, docs[j])
-
-                        query_tensor = torch.tensor(query_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
-                        doc1_tensor = torch.tensor(doc1_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
-                        doc2_tensor = torch.tensor(doc2_features, dtype=torch.float32, device=self.model.device).unsqueeze(0)
+                        doc1_tensor = torch.tensor(all_doc_features[i], dtype=torch.float32, device=self.model.device).unsqueeze(0)
+                        doc2_tensor = torch.tensor(all_doc_features[j], dtype=torch.float32, device=self.model.device).unsqueeze(0)
 
                         optimizer.zero_grad()
 
@@ -316,34 +319,34 @@ if __name__ == "__main__":
         raise SystemExit(f"PyTorch is unavailable in this environment: {TORCH_IMPORT_ERROR}")
 
     pois = [
-        {"id": 1, "name": "Shunjing Hot Spring", "category": "Hot Spring", "description": "well-known resort"},
-        {"id": 2, "name": "Jiuhua Mountain Resort", "category": "Hot Spring", "description": "scenic spa resort"},
-        {"id": 3, "name": "City Spa Center", "category": "Spa", "description": "relaxing services"},
-        {"id": 4, "name": "Capital Hot Spring", "category": "Hot Spring", "description": "popular hotel"},
+        {"id": 1, "name": "Tower of London", "category": "Historic Landmark", "description": "ancient fortress and UNESCO World Heritage Site"},
+        {"id": 2, "name": "British Museum", "category": "Museum", "description": "world-class collection of art and artefacts"},
+        {"id": 3, "name": "Tate Modern", "category": "Gallery", "description": "contemporary art gallery on the South Bank"},
+        {"id": 4, "name": "Hyde Park", "category": "Park", "description": "iconic royal park with open-air concerts"},
     ]
 
     training_data = [
-        (["hot", "spring"], pois[:3], [3, 4, 1]),
-        (["spa", "city"], pois, [2, 1, 5, 2]),
+        (["museum", "london"], pois[:3], [3, 4, 1]),
+        (["gallery", "art"], pois, [2, 1, 5, 2]),
     ]
 
     print("=== Cross-Encoder Reranker ===")
     cross_reranker = CrossEncoderReranker()
     cross_reranker.train(training_data, epochs=5)
-    results = cross_reranker.rerank(["hot", "spring"], pois, top_k=2)
+    results = cross_reranker.rerank(["museum", "london"], pois, top_k=2)
     for doc in results:
         print(f"  {doc['name']}: {doc.get('cross_encoder_score', 0):.4f}")
 
     print("\n=== Dense Semantic Reranker ===")
     dense_reranker = DenseSemanticReranker()
     dense_reranker.train(training_data, epochs=5)
-    results = dense_reranker.rerank(["hot", "spring"], pois, top_k=2)
+    results = dense_reranker.rerank(["museum", "london"], pois, top_k=2)
     for doc in results:
         print(f"  {doc['name']}: {doc.get('dense_semantic_score', 0):.4f}")
 
     print("\n=== Hybrid Reranker ===")
     hybrid_reranker = HybridReranker()
     hybrid_reranker.train(training_data, epochs=5)
-    results = hybrid_reranker.rerank(["hot", "spring"], pois, top_k=2)
+    results = hybrid_reranker.rerank(["museum", "london"], pois, top_k=2)
     for doc in results:
         print(f"  {doc['name']}: {doc.get('hybrid_score', 0):.4f}")

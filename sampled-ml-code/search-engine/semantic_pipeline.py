@@ -138,15 +138,15 @@ if __name__ == "__main__":
     async def main():
         documents = [
             (
-                "New Jersey has several excellent hot springs. Shunjing Hot Spring is well-known for its resort facilities. Jiuhua Mountain Resort offers scenic spa services. The Capital Hot Spring provides popular hotel amenities.",
+                "London has several world-class museums. The British Museum is well-known for its vast collection of art and artefacts. Tate Modern offers contemporary art on the South Bank. The Natural History Museum provides natural history exhibits.",
                 "doc1",
             ),
             (
-                "To reach the spa resort, take the main highway and follow the signs. The resort is located in a beautiful mountain area with easy access from downtown.",
+                "To reach the National Gallery, take the Underground to Charing Cross or Leicester Square. The gallery is located on the north side of Trafalgar Square in central London.",
                 "doc2",
             ),
             (
-                "This hot spring is famous because it has unique mineral content that provides therapeutic benefits. Unlike regular spas, it offers authentic hot spring experience with natural geothermal water.",
+                "The Tower of London is a historic fortress and UNESCO World Heritage Site. It houses the Crown Jewels and offers guided tours of royal history.",
                 "doc3",
             ),
         ]
@@ -155,9 +155,9 @@ if __name__ == "__main__":
         await pipeline.build_index(documents)
 
         queries = [
-            "What are the best hot springs in New Jersey?",
-            "How do I get to the spa resort?",
-            "Why is this hot spring famous?",
+            "What are the best museums in London?",
+            "How do I get to the National Gallery?",
+            "Why is the Tower of London famous?",
         ]
 
         print("\n=== Semantic Retrieval Results ===")
